@@ -104,9 +104,132 @@ const char *tc_decode_error_name(tc_decode_error_t e)
     }
 }
 
-/* --- decodage, parasites, classification : taches 5 et 6 (stubs provisoires) --- */
-size_t tc_proto_merge_glitches(tc_segment_t *segs, size_t n, uint16_t glitch_us) { (void)segs; (void)glitch_us; return n; }
-size_t tc_proto_strip_trailing_idle(tc_segment_t *segs, size_t n) { (void)segs; return n; }
-bool tc_proto_decode(const tc_segment_t *segs, size_t n, tc_telegram_t *out, tc_decode_error_t *err) { (void)segs; (void)n; (void)out; if (err) *err = TC_ERR_LENGTH; return false; }
+/* --- decodage, parasites, repos de fin --- */
+size_t tc_proto_merge_glitches(tc_segment_t *segs, size_t n, uint16_t glitch_us)
+{
+    bool changed = true;
+    while (changed && n > 0) {
+        changed = false;
+        for (size_t i = 0; i < n; i++) {
+            if (segs[i].duration_us >= glitch_us) {
+                continue;
+            }
+            if (i > 0 && i + 1 < n) {
+                /* fondre i-1, i, i+1 dans i-1 (les voisins ont le meme niveau) */
+                uint32_t sum = (uint32_t)segs[i - 1].duration_us + segs[i].duration_us + segs[i + 1].duration_us;
+                segs[i - 1].duration_us = (sum > 0xFFFF) ? 0xFFFF : (uint16_t)sum;
+                memmove(&segs[i], &segs[i + 2], (n - i - 2) * sizeof(*segs));
+                n -= 2;
+            } else {
+                /* en tete ou en queue : simple suppression */
+                memmove(&segs[i], &segs[i + 1], (n - i - 1) * sizeof(*segs));
+                n -= 1;
+            }
+            changed = true;
+            break;
+        }
+    }
+    return n;
+}
+
+size_t tc_proto_strip_trailing_idle(tc_segment_t *segs, size_t n)
+{
+    while (n > 0 && segs[n - 1].duration_us > TC_START_ACK_MAX_US) {
+        n--;
+    }
+    return n;
+}
+
+static int classify_bit(uint16_t d)
+{
+    if (d >= TC_BIT0_MIN_US && d <= TC_BIT0_MAX_US) {
+        return 0;
+    }
+    if (d >= TC_BIT1_MIN_US && d <= TC_BIT1_MAX_US) {
+        return 1;
+    }
+    return -1;
+}
+
+bool tc_proto_decode(const tc_segment_t *segs, size_t n, tc_telegram_t *out, tc_decode_error_t *err)
+{
+    tc_decode_error_t e = TC_ERR_NONE;
+    tc_telegram_t t;
+    unsigned nbits = 0;
+    uint32_t raw = 0;
+    memset(&t, 0, sizeof t);
+
+    if (n == TC_SEGMENTS_ACK) {
+        nbits = 4;
+    } else if (n == TC_SEGMENTS_SHORT) {
+        nbits = 16;
+    } else if (n == TC_SEGMENTS_LONG) {
+        nbits = 32;
+    } else {
+        e = TC_ERR_LENGTH;
+        goto done;
+    }
+
+    {
+        uint16_t s0 = segs[0].duration_us;
+        if (s0 >= TC_START_CMD_MIN_US && s0 <= TC_START_CMD_MAX_US) {
+            t.is_response = false;
+        } else if (s0 >= TC_START_ACK_MIN_US && s0 <= TC_START_ACK_MAX_US) {
+            t.is_response = true;
+        } else {
+            e = TC_ERR_START;
+            goto done;
+        }
+    }
+
+    {
+        int len = classify_bit(segs[1].duration_us);
+        if (len < 0) {
+            e = TC_ERR_TIMING;
+            goto done;
+        }
+        if ((nbits == 32) != (len == 1)) {
+            e = TC_ERR_LEN_BIT;
+            goto done;
+        }
+        t.is_long = (nbits == 32);
+    }
+
+    for (unsigned i = 0; i < nbits; i++) {
+        int b = classify_bit(segs[2 + i].duration_us);
+        if (b < 0) {
+            e = TC_ERR_TIMING;
+            goto done;
+        }
+        raw = (raw << 1) | (uint32_t)b;
+    }
+
+    {
+        int chk = classify_bit(segs[n - 1].duration_us);
+        if (chk < 0) {
+            e = TC_ERR_TIMING;
+            goto done;
+        }
+        if ((uint8_t)chk != tc_proto_parity(raw, nbits)) {
+            e = TC_ERR_PARITY;
+            goto done;
+        }
+    }
+    t.raw = raw;
+
+done:
+    if (err) {
+        *err = e;
+    }
+    if (e != TC_ERR_NONE) {
+        return false;
+    }
+    if (out) {
+        *out = t;
+    }
+    return true;
+}
+
+/* --- classification et liste blanche : tache 6 (stubs provisoires) --- */
 void tc_proto_classify(tc_telegram_t *t) { (void)t; }
 bool tc_proto_tx_allowed(const tc_telegram_t *t) { (void)t; return false; }
