@@ -117,7 +117,11 @@ Ce flash USB n'a lieu **qu'une fois**. Ensuite, toutes les mises à jour passent
    . ~/esp/esp-idf/export.sh
    cd ~/CLionProjects/Doorman
    ```
-5. **Clé de signature (une seule fois)** :
+5. **Clé de signature (une seule fois)**. D'abord vérifier si elle existe déjà :
+   ```bash
+   ls keys/signing_key.pem
+   ```
+   Si le fichier existe, **ne rien faire** : c'est la clé de la carte. Sinon seulement :
    ```bash
    idf.py secure-generate-signing-key --version 2 --scheme rsa3072 keys/signing_key.pem
    ```
