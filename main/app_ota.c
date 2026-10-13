@@ -19,6 +19,7 @@ static const char *TAG = "ota";
 
 #define OTA_CHUNK 4096
 #define TOKEN_MIN_LEN 32
+#define OTA_DEADLINE_US (5LL * 60 * 1000000)   /* un transfert complet ne doit pas monopoliser le serveur */
 
 static httpd_handle_t s_server;
 static esp_timer_handle_t s_reboot_timer;
@@ -167,12 +168,20 @@ static esp_err_t ota_post(httpd_req_t *req)
         return ota_finish(req, "409 Conflict", "self-test pending\n", false);
     }
     if (e != ESP_OK) {
+        if (h != 0) {
+            esp_ota_abort(h);          /* esp_ota_begin garde l'entree si l'effacement echoue */
+        }
         return ota_finish(req, "500 Internal Server Error", esp_err_to_name(e), false);
     }
 
     size_t remaining = req->content_len;
     bool first = true;
+    const int64_t deadline = esp_timer_get_time() + OTA_DEADLINE_US;
     while (remaining > 0) {
+        if (esp_timer_get_time() > deadline) {
+            esp_ota_abort(h);
+            return ota_finish(req, "500 Internal Server Error", "transfer too slow\n", false);
+        }
         size_t want = remaining < OTA_CHUNK ? remaining : OTA_CHUNK;
         int r = httpd_req_recv(req, (char *)s_buf, want);
         if (r == HTTPD_SOCK_ERR_TIMEOUT) {
