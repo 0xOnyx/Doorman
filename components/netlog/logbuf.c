@@ -73,3 +73,8 @@ uint64_t logbuf_total(const logbuf_t *lb)
 {
     return lb->total;
 }
+
+uint64_t logbuf_oldest(const logbuf_t *lb)
+{
+    return lb->total - lb->len;
+}

@@ -29,4 +29,7 @@ size_t logbuf_read(const logbuf_t *lb, uint64_t *cursor, void *out, size_t n, ui
 
 uint64_t logbuf_total(const logbuf_t *lb);
 
+/* Position absolue du plus ancien octet encore disponible (curseur de depart d'un lecteur). */
+uint64_t logbuf_oldest(const logbuf_t *lb);
+
 #endif

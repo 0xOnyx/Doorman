@@ -9,6 +9,7 @@ static void test_write_read(void)
     logbuf_init(&lb, st, sizeof st);
     logbuf_write(&lb, "hello", 5);
     CHECK_EQ(logbuf_total(&lb), 5);
+    CHECK_EQ(logbuf_oldest(&lb), 0);
 
     char out[32] = {0};
     uint64_t cur = 0, lost = 99;
@@ -33,6 +34,7 @@ static void test_wrap(void)
     logbuf_write(&lb, "fgh", 3);
     logbuf_write(&lb, "ij", 2);        /* total 10, le tampon garde "cdefghij" */
     CHECK_EQ(logbuf_total(&lb), 10);
+    CHECK_EQ(logbuf_oldest(&lb), 2);
 
     char out[16] = {0};
     uint64_t cur = 0, lost = 0;

@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/select.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -14,15 +17,20 @@ static const char *TAG = "netlog";
 
 #define NETLOG_LINE_MAX   256     /* pas LINE_MAX : deja defini par newlib */
 #define CHUNK_MAX         512
+#define NOTICE_MAX        64      /* place reservee devant le chunk pour "[netlog: N octets perdus]" */
 #define POLL_MS           50
+#define TASK_STACK        4096
 
 static logbuf_t s_lb;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static vprintf_like_t s_orig_vprintf;
 static volatile bool s_listening;
+static bool s_started;
 static int s_port;
 
-/* Hook esp_log : console d'origine + tampon circulaire. Ne bloque jamais. */
+/* Hook esp_log : console d'origine + tampon circulaire. La partie tampon ne bloque jamais
+ * (section critique de quelques us) ; la console serie, elle, garde son comportement d'origine.
+ * Une ligne tronquee a 255 octets garde son '\n' final pour ne pas coller la suivante. */
 static int netlog_vprintf(const char *fmt, va_list ap)
 {
     char line[NETLOG_LINE_MAX];
@@ -34,7 +42,11 @@ static int netlog_vprintf(const char *fmt, va_list ap)
     int r = s_orig_vprintf ? s_orig_vprintf(fmt, ap) : vprintf(fmt, ap);
 
     if (n > 0) {
-        size_t len = ((size_t)n < sizeof line) ? (size_t)n : sizeof line - 1;
+        size_t len = (size_t)n;
+        if (len >= sizeof line) {
+            len = sizeof line - 1;
+            line[len - 1] = '\n';
+        }
         portENTER_CRITICAL(&s_lock);
         logbuf_write(&s_lb, line, len);
         portEXIT_CRITICAL(&s_lock);
@@ -78,40 +90,45 @@ static void reject_pending(int lfd)
 
 static void serve_client(int lfd, int c)
 {
-    uint8_t chunk[CHUNK_MAX];
+    uint8_t buf[NOTICE_MAX + CHUNK_MAX];     /* [notice eventuelle][donnees] */
     size_t pending = 0, off = 0;
     uint64_t cursor;
 
     set_nonblock(c);
     portENTER_CRITICAL(&s_lock);
-    cursor = s_lb.total - s_lb.len;          /* tout l'historique disponible */
+    cursor = logbuf_oldest(&s_lb);           /* tout l'historique disponible */
     portEXIT_CRITICAL(&s_lock);
 
     for (;;) {
+        reject_pending(lfd);                 /* meme sous charge, un second client recoit "busy" */
         if (pending == 0) {
             uint64_t lost = 0;
             portENTER_CRITICAL(&s_lock);
-            size_t n = logbuf_read(&s_lb, &cursor, chunk, sizeof chunk, &lost);
+            size_t n = logbuf_read(&s_lb, &cursor, buf + NOTICE_MAX, CHUNK_MAX, &lost);
             portEXIT_CRITICAL(&s_lock);
-            if (lost > 0) {
-                char msg[64];
-                int m = snprintf(msg, sizeof msg, "\n[netlog: %llu octets perdus]\n", (unsigned long long)lost);
-                send(c, msg, (size_t)m, MSG_DONTWAIT);
-            }
             if (n == 0) {
                 char tmp[16];
                 int r = recv(c, tmp, sizeof tmp, MSG_DONTWAIT);
                 if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
                     return;                   /* client parti */
                 }
-                reject_pending(lfd);
                 vTaskDelay(pdMS_TO_TICKS(POLL_MS));
                 continue;
             }
+            off = NOTICE_MAX;
             pending = n;
-            off = 0;
+            if (lost > 0) {
+                /* la notice part devant les donnees et suit le meme chemin de renvoi */
+                char msg[NOTICE_MAX];
+                int m = snprintf(msg, sizeof msg, "\n[netlog: %llu octets perdus]\n", (unsigned long long)lost);
+                if (m > 0 && m < NOTICE_MAX) {
+                    off = NOTICE_MAX - (size_t)m;
+                    memcpy(buf + off, msg, (size_t)m);
+                    pending += (size_t)m;
+                }
+            }
         }
-        int w = send(c, chunk + off, pending, MSG_DONTWAIT);
+        int w = send(c, buf + off, pending, MSG_DONTWAIT);
         if (w > 0) {
             off += (size_t)w;
             pending -= (size_t)w;
@@ -162,9 +179,13 @@ static void netlog_task(void *arg)
 
 esp_err_t netlog_server_start(int port)
 {
+    if (s_started) {
+        return ESP_ERR_INVALID_STATE;
+    }
     s_port = port;
-    BaseType_t ok = xTaskCreate(netlog_task, "netlog", 3072, NULL, 4, NULL);
-    return ok == pdPASS ? ESP_OK : ESP_FAIL;
+    BaseType_t ok = xTaskCreate(netlog_task, "netlog", TASK_STACK, NULL, 4, NULL);
+    s_started = (ok == pdPASS);
+    return s_started ? ESP_OK : ESP_FAIL;
 }
 
 bool netlog_server_is_listening(void)
