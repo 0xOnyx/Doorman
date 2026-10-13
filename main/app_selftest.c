@@ -25,6 +25,9 @@ static const char *missing_condition(void)
     if (!app_ota_is_running()) {
         return "serveur HTTP absent";
     }
+    if (!app_ota_token_ok()) {
+        return "token OTA inutilisable";     /* double du garde-fou de compilation */
+    }
     if (!tc_bus_is_running()) {
         return "tache bus absente";
     }
@@ -72,9 +75,10 @@ static void selftest_task(void *arg)
 
 void app_selftest_start(void)
 {
+    /* hors APP_BENCH_TEST, app_config_check.c refuse deja de compiler dans ce cas */
     if (CONFIG_APP_SELFTEST_TIMEOUT_S >= CONFIG_APP_RECOVERY_AP_DELAY_S) {
-        ESP_LOGW(TAG, "invariant non respecte : auto-test (%d s) >= SoftAP (%d s), "
-                 "une image sans Wi-Fi pourrait etre validee par le SoftAP",
+        ESP_LOGW(TAG, "image de test APP_BENCH_TEST : auto-test (%d s) >= SoftAP (%d s), "
+                 "une image sans Wi-Fi pourrait etre validee par le SoftAP, NE PAS INSTALLER",
                  CONFIG_APP_SELFTEST_TIMEOUT_S, CONFIG_APP_RECOVERY_AP_DELAY_S);
     }
     const esp_partition_t *run = esp_ota_get_running_partition();

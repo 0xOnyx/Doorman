@@ -267,3 +267,8 @@ bool app_ota_in_progress(void)
 {
     return s_in_progress;
 }
+
+bool app_ota_token_ok(void)
+{
+    return s_token_ok;
+}

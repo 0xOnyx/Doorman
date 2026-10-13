@@ -52,6 +52,15 @@ menu "Interphone"
         config APP_SELFTEST_FORCE_FAIL
             bool "TEST UNIQUEMENT : forcer l'echec de l'auto-test"
             default n
+        config APP_BENCH_TEST
+            bool "TEST SUR L'ETABLI UNIQUEMENT : autorise auto-test >= delai du SoftAP"
+            default n
+            help
+                Leve le garde-fou de compilation qui exige un auto-test plus court que le
+                delai du SoftAP de secours. Sert uniquement a tester le SoftAP sur l'etabli
+                avec des delais courts (ex. 60 s / 180 s). Ne JAMAIS activer dans une image
+                qui sera installee : une image sans Wi-Fi fonctionnel serait validee par le
+                SoftAP et l'acces distant ne reviendrait qu'en passant par lui.
     endmenu
 
     config APP_HEARTBEAT_S
