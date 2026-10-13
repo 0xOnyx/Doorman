@@ -58,7 +58,8 @@ Ctrl+C pour quitter.
 | `deconnecte (raison N), nouvel essai dans X s` | Wi-Fi perdu, nouvel essai automatique (délai qui double jusqu'à 60 s) |
 | `HB up=...s heap=... rssi=... net=sta bus_ok=... bus_err=...` | Battement de cœur toutes les 5 min : la carte va bien |
 | `HB pile libre (octets) ...` | Marge de pile de chaque tâche (doit rester au-dessus de 512) |
-| `TC RX DOOR_CALL raw=0x0C30BA80 len=32 serial=0xC30BA addr=0 ...` | Télégramme lu sur le bus (voir section 7) |
+| `TC RX DOOR_CALL raw=0x0C30BA80 len=32 serial=0xC30BA addr=0 ...` | Télégramme lu sur le bus (voir section 7) ; ` << POUR MOI` en fin de ligne s'il concerne ton appartement |
+| `numero de serie non configure : relever un DOOR_CALL ...` | Au démarrage : `TC_BUS_MY_SERIAL` n'est pas encore réglé (section 7) |
 | `TC RX ERR parity ...` | Trame illisible (parasite, ou trame abîmée). Quelques-unes sont normales |
 | `nouvelle image en attente : auto-test (90 s max)` | Premier démarrage d'une nouvelle version |
 | `SELFTEST OK, image validee` | La nouvelle version est gardée |
@@ -77,10 +78,13 @@ curl -H "Authorization: Bearer $OTA_TOKEN" http://interphone.local:8080/info
 Exemple de réponse :
 
 ```json
-{"version":"0.1.3","idf":"v5.5.5","partition":"ota_1","ota_state":"valid",
+{"version":"0.1.8","idf":"v5.5.5","partition":"ota_1","ota_state":"valid",
  "other_partition":"ota_0","other_state":"valid","uptime_s":86400,
  "heap_free":151234,"heap_min":140112,"rssi":-61,"reset_reason":"software",
- "net":"sta","bus_frames_ok":42,"bus_frames_err":3}
+ "net":"sta","bus_frames_ok":42,"bus_frames_err":3,
+ "bus":{"ok":42,"err":3,"for_me":2,"my_serial":"0xC30BA","door_call":5,"internal_call":0,
+        "floor_call":1,"open_door":2,"open_door_long":0,"light":1,"unknown":4,
+        "last_raw":"0x1100","last_type":"OPEN_DOOR","last_age_s":12}}
 ```
 
 | Champ | À surveiller |
@@ -91,7 +95,8 @@ Exemple de réponse :
 | `reset_reason` | `poweron` (coupure de courant), `software` (OTA ou reboot), `panic`/`task_wdt` (plantage, à signaler), `brownout` (alimentation trop faible) |
 | `heap_min` | Mémoire libre minimale depuis le démarrage ; doit rester au-dessus de 50 000 |
 | `net` | `sta` (box) ou `recovery` (point d'accès de secours) |
-| `bus_frames_ok` / `bus_frames_err` | Trames lues / rejetées depuis le démarrage |
+| `bus_frames_ok` / `bus_frames_err` | Trames lues / rejetées depuis le démarrage (repris dans `bus.ok` / `bus.err`) |
+| `bus` | Activité du bus depuis le démarrage, détaillée en section 7 |
 
 Réponses d'erreur : `401 unauthorized` (token absent ou faux), `503` (la carte a été compilée
 sans token valide, ce que le build refuse désormais).
@@ -201,6 +206,45 @@ TC RX DOOR_CALL raw=0x0C30BA80 len=32 serial=0xC30BA addr=0 payload=0x1 chk=ok
 3. **Appuyer sur « ouvrir » sur ton écran Koch.** Noter la ligne `OPEN_DOOR` ou
    `OPEN_DOOR_LONG`, son `raw` complet et son `addr`.
 4. Envoyer ces trois valeurs : elles servent à configurer les phases 1 et 2.
+
+### Régler ton numéro de série
+
+1. `idf.py menuconfig` → menu **« Bus TC (tc_bus) »** :
+   - **Numero de serie de la station interieure** (`TC_BUS_MY_SERIAL`) : le `serial` relevé
+     sur ton `DOOR_CALL`, en hexadécimal (par exemple `0xC30BA`). `0` = non réglé.
+   - **Adresse de la platine de rue** (`TC_BUS_DOOR_ADDRESS`) : l'`addr` relevé sur
+     l'`OPEN_DOOR` court (souvent `0`).
+2. **Incrémenter `version.txt`**, puis livrer par OTA : `tools/ota.sh` (section 4).
+3. Au démarrage, les logs affichent `numero de serie configure : 0xC30BA, platine adresse 0`
+   (au lieu de `numero de serie non configure ...`).
+
+### Le repère `<< POUR MOI`
+
+Une fois le numéro réglé, les lignes qui concernent ton appartement se terminent par ` << POUR MOI` :
+
+```
+TC RX DOOR_CALL raw=0x0C30BA80 len=32 serial=0xC30BA addr=0 payload=0x1 chk=ok << POUR MOI
+TC RX OPEN_DOOR raw=0x1100 len=16 serial=0x00000 addr=0 payload=0x0 chk=ok << POUR MOI
+```
+
+- `DOOR_CALL`, `INTERNAL_CALL`, `FLOOR_CALL`, `START_TALKING`, `CONTROL_FUNCTION`,
+  `OPEN_DOOR_LONG`, `REQUEST_VERSION` : marqués quand leur `serial` est le tien.
+- `OPEN_DOOR` (forme courte) : il ne porte pas de numéro de série. Il n'est marqué que s'il vise
+  l'adresse de ta platine **et** arrive moins de 3 minutes après un appel pour toi
+  (`DOOR_CALL` ou `INTERNAL_CALL`) ; sinon toute ouverture de l'immeuble serait marquée.
+
+### L'objet `bus` de `/info`
+
+| Champ | Signification |
+|---|---|
+| `ok` / `err` | Trames valides / rejetées depuis le démarrage |
+| `for_me` | Trames marquées `<< POUR MOI` |
+| `my_serial` | Numéro configuré, ou `"unset"` |
+| `door_call`, `internal_call`, `floor_call`, `open_door`, `open_door_long`, `light`, `unknown` | Trames valides de chaque type |
+| `last_raw` / `last_type` / `last_age_s` | Dernière trame valide et son âge en secondes ; `null` si aucune |
+
+Pour vérifier à distance qu'une sonnerie a bien été vue : `for_me` et `door_call` augmentent,
+`last_type` vaut `DOOR_CALL` avec un `last_age_s` faible.
 
 Le compteur `bus_frames_err` qui monte un peu est normal. S'il monte vite (plusieurs par seconde
 en continu), le câblage ou le niveau du bus est à vérifier (tension au repos d'environ 2,9 V sur GPIO4).
