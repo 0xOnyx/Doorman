@@ -5,6 +5,7 @@
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include "driver/rmt_rx.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -72,7 +73,13 @@ static void rx_task(void *arg)
         /* rearmer tout de suite : les symboles sont copies */
         esp_err_t e = rmt_receive(s_rx, s_symbols, sizeof s_symbols, &s_rx_cfg);
         if (e != ESP_OK) {
-            ESP_LOGE(TAG, "rmt_receive: %s", esp_err_to_name(e));
+            vTaskDelay(1);
+            e = rmt_receive(s_rx, s_symbols, sizeof s_symbols, &s_rx_cfg);
+        }
+        if (e != ESP_OK) {
+            /* reception morte : l'auto-test et /info doivent le voir */
+            ESP_LOGE(TAG, "rmt_receive: %s, reception arretee", esp_err_to_name(e));
+            s_running = false;
         }
         if (k < 2) {
             continue;                       /* evenement vide ou parasite isole */
@@ -80,6 +87,10 @@ static void rx_task(void *arg)
         s_stats.last_rx_us = esp_timer_get_time();
         k = tc_proto_merge_glitches(segs, k, CONFIG_TC_BUS_GLITCH_US);   /* d'abord : un parasite dans le repos */
         k = tc_proto_strip_trailing_idle(segs, k);                        /* ensuite : retirer le repos */
+        if (k < TC_SEGMENTS_ACK) {
+            s_stats.frames_err++;           /* bruit trop court pour une trame : compte sans inonder les logs */
+            continue;
+        }
 
         tc_telegram_t t;
         tc_decode_error_t err;
@@ -121,6 +132,10 @@ esp_err_t tc_bus_start(tc_bus_rx_cb_t cb, void *ctx)
         ESP_LOGE(TAG, "rmt_new_rx_channel: %s", esp_err_to_name(e));
         return e;
     }
+    /* rmt_new_rx_channel active le pull-up interne (~45 kOhm, rmt_rx.c) : sur le diviseur 1 M / 147 k
+       il remonterait un mark du bus a ~2.4 V, illisible. On le coupe (spec 3 : GPIO4 sans pull). */
+    gpio_pullup_dis(CONFIG_TC_BUS_RX_GPIO);
+    gpio_pulldown_dis(CONFIG_TC_BUS_RX_GPIO);
     const rmt_rx_event_callbacks_t cbs = { .on_recv_done = on_recv_done };
     e = rmt_rx_register_event_callbacks(s_rx, &cbs, NULL);
     if (e == ESP_OK) {
