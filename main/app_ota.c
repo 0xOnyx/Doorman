@@ -8,6 +8,8 @@
 #include "esp_app_desc.h"
 #include "esp_ota_ops.h"
 #include "esp_http_server.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "ota_auth.h"
 #include "app_status.h"
 #include "app_net.h"
@@ -114,7 +116,93 @@ static esp_err_t reboot_post(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* --- POST /ota : tache 10 --- */
+/* Fin d'une OTA. reboot=true : la reponse 200 est envoyee et le redemarrage est programme.
+ * reboot=false : echec, on libere le bus et on previent app_net (arret differe du SoftAP). */
+static esp_err_t ota_finish(httpd_req_t *req, const char *status, const char *msg, bool reboot)
+{
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, reboot ? "application/json" : "text/plain");
+    httpd_resp_sendstr(req, msg);
+    ESP_LOGI(TAG, "pile httpd libre min : %u octets", (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    if (reboot) {
+        ESP_LOGI(TAG, "OTA OK, redemarrage dans 1 s");
+        esp_timer_start_once(s_reboot_timer, 1000000);
+        return ESP_OK;
+    }
+    ESP_LOGW(TAG, "OTA echouee: %s", msg);
+    s_in_progress = false;
+    tc_bus_tx_unblock();
+    app_net_ota_finished();
+    return ESP_FAIL;
+}
+
+static esp_err_t ota_post(httpd_req_t *req)
+{
+    if (!check_auth(req)) {
+        return ESP_FAIL;
+    }
+    if (s_in_progress) {
+        return reply_close(req, "409 Conflict", "ota already in progress\n");
+    }
+    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+    if (part == NULL) {
+        return reply_close(req, "500 Internal Server Error", "no ota partition\n");
+    }
+    if (!ota_size_ok(req->content_len, part->size)) {
+        return reply_close(req, "413 Payload Too Large", "missing or oversized Content-Length\n");
+    }
+
+    s_in_progress = true;
+    tc_bus_tx_block();
+    ESP_LOGI(TAG, "OTA: %u octets vers %s", (unsigned)req->content_len, part->label);
+
+    esp_ota_handle_t h = 0;
+    esp_err_t e = esp_ota_begin(part, req->content_len, &h);
+    if (e == ESP_ERR_OTA_ROLLBACK_INVALID_STATE) {
+        return ota_finish(req, "409 Conflict", "self-test pending\n", false);
+    }
+    if (e != ESP_OK) {
+        return ota_finish(req, "500 Internal Server Error", esp_err_to_name(e), false);
+    }
+
+    size_t remaining = req->content_len;
+    bool first = true;
+    while (remaining > 0) {
+        size_t want = remaining < OTA_CHUNK ? remaining : OTA_CHUNK;
+        int r = httpd_req_recv(req, (char *)s_buf, want);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            /* 10 s sans un octet : on abandonne, sinon un client bloque monopolise le serveur */
+            esp_ota_abort(h);
+            return ota_finish(req, "500 Internal Server Error", "receive timeout\n", false);
+        }
+        if (r <= 0) {
+            esp_ota_abort(h);
+            return ota_finish(req, "500 Internal Server Error", "receive error\n", false);
+        }
+        e = esp_ota_write(h, s_buf, (size_t)r);
+        if (e != ESP_OK) {
+            esp_ota_abort(h);
+            bool bad_image = first && e == ESP_ERR_OTA_VALIDATE_FAILED;
+            return ota_finish(req, bad_image ? "400 Bad Request" : "500 Internal Server Error",
+                              bad_image ? "not a firmware image\n" : esp_err_to_name(e), false);
+        }
+        first = false;
+        remaining -= (size_t)r;
+    }
+
+    e = esp_ota_end(h);
+    if (e == ESP_ERR_OTA_VALIDATE_FAILED) {
+        return ota_finish(req, "400 Bad Request", "image invalid or unsigned\n", false);
+    }
+    if (e != ESP_OK) {
+        return ota_finish(req, "500 Internal Server Error", esp_err_to_name(e), false);
+    }
+    e = esp_ota_set_boot_partition(part);
+    if (e != ESP_OK) {
+        return ota_finish(req, "500 Internal Server Error", esp_err_to_name(e), false);
+    }
+    return ota_finish(req, "200 OK", "{\"status\":\"ok\",\"reboot_in_ms\":1000}\n", true);
+}
 
 void app_ota_start(void)
 {
@@ -150,8 +238,10 @@ void app_ota_start(void)
     const httpd_uri_t reboot = { .uri = "/reboot", .method = HTTP_POST, .handler = reboot_post };
     httpd_register_uri_handler(s_server, &info);
     httpd_register_uri_handler(s_server, &reboot);
+    const httpd_uri_t ota = { .uri = "/ota", .method = HTTP_POST, .handler = ota_post };
+    httpd_register_uri_handler(s_server, &ota);
     s_running = true;
-    ESP_LOGI(TAG, "serveur HTTP sur le port %d", CONFIG_APP_HTTP_PORT);
+    ESP_LOGI(TAG, "serveur HTTP sur le port %d (/info, /ota, /reboot)", CONFIG_APP_HTTP_PORT);
 }
 
 bool app_ota_is_running(void)
