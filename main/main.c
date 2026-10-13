@@ -12,6 +12,8 @@
 #include "netlog.h"
 #include "app_status.h"
 #include "app_net.h"
+#include "app_ota.h"
+#include "tc_bus.h"
 
 static const char *TAG = "main";
 
@@ -71,4 +73,6 @@ void app_main(void)
 #if CONFIG_APP_NETLOG_ENABLE
     netlog_server_start(CONFIG_APP_NETLOG_PORT);
 #endif
+    app_ota_start();
+    tc_bus_start(NULL, NULL);
 }
