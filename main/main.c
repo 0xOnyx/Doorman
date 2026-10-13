@@ -159,6 +159,10 @@ void app_main(void)
 #endif
     app_ota_start();
     tc_bus_start(on_telegram, NULL);
+    /* Diagnostic de boot, apres tc_bus_start pour voir le routage RMT et les pulls de GPIO4 :
+       attendu GPIO4 entree sans pull, GPIO10 sortie a 0. Ecrit sur stdout : console seulement,
+       pas dans les logs reseau. */
+    gpio_dump_io_configuration(stdout, (1ULL << CONFIG_TC_BUS_RX_GPIO) | (1ULL << CONFIG_TC_BUS_TX_GPIO));
     app_selftest_start();
 
     /* Battement de coeur : controles de sante toutes les 30 s, log toutes les APP_HEARTBEAT_S
