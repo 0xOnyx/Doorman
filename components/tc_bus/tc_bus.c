@@ -87,9 +87,10 @@ static void rx_task(void *arg)
         k = tc_proto_merge_glitches(segs, k, CONFIG_TC_BUS_GLITCH_US);   /* d'abord : un parasite dans le repos */
         k = tc_proto_strip_trailing_idle(segs, k);                        /* ensuite : retirer le repos */
         if (k < TC_SEGMENTS_ACK) {
+            /* bruit trop court pour une trame : compte sans inonder les logs */
             taskENTER_CRITICAL(&s_stats_lock);
             s_stats.frames_err++;
-            taskEXIT_CRITICAL(&s_stats_lock);           /* bruit trop court pour une trame : compte sans inonder les logs */
+            taskEXIT_CRITICAL(&s_stats_lock);
             continue;
         }
 
