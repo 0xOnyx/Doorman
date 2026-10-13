@@ -446,13 +446,13 @@ TESTS := test_ota_auth$(EXE) test_logbuf$(EXE) test_tc_proto$(EXE)
 
 all: $(TESTS)
 
-test_ota_auth$(EXE): test_ota_auth.c ../../main/ota_auth.c t.h
+test_ota_auth$(EXE): test_ota_auth.c ../../main/ota_auth.c ../../main/ota_auth.h t.h
 	$(CC) $(CFLAGS) -o $@ test_ota_auth.c ../../main/ota_auth.c
 
-test_logbuf$(EXE): test_logbuf.c ../../components/netlog/logbuf.c t.h
+test_logbuf$(EXE): test_logbuf.c ../../components/netlog/logbuf.c ../../components/netlog/include/logbuf.h t.h
 	$(CC) $(CFLAGS) -o $@ test_logbuf.c ../../components/netlog/logbuf.c
 
-test_tc_proto$(EXE): test_tc_proto.c ../../components/tc_bus/tc_proto.c t.h
+test_tc_proto$(EXE): test_tc_proto.c ../../components/tc_bus/tc_proto.c ../../components/tc_bus/include/tc_proto.h t.h
 	$(CC) $(CFLAGS) -o $@ test_tc_proto.c ../../components/tc_bus/tc_proto.c
 
 test: $(TESTS)
