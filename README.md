@@ -146,7 +146,7 @@ Ce flash USB n'a lieu **qu'une fois**. Ensuite, toutes les mises à jour passent
 9. Si le flash ne démarre pas (`Failed to connect to ESP32-S3` / `No serial data received.`) : passer en mode téléchargement à la main. Maintenir **BOOT** (GPIO0 sur les cartes ESP32-S3), appuyer puis relâcher **RESET** (EN), relâcher **BOOT**, puis relancer la commande. Si ça échoue encore, essayer un débit plus bas : `idf.py -p /dev/ttyACM0 -b 115200 erase-flash flash monitor`.
 10. Ce qu'on doit voir dans le moniteur au démarrage (dans cet ordre, entre autres lignes) :
     ```
-    interphone-homekit 0.1.0 | partition ota_0 (none) | reset ...
+    interphone-homekit 0.1.0 | partition ota_0 (valid) | reset usb
     station demarree, ssid '...', puissance max 52
     connecte, IP 192.168.x.y, rssi -NN
     serveur de logs sur le port 3333
@@ -154,7 +154,7 @@ Ce flash USB n'a lieu **qu'une fois**. Ensuite, toutes les mises à jour passent
     reception RMT sur GPIO4, emission NON compilee (TX GPIO10 reste a 0)
     image deja validee, pas d'auto-test
     ```
-    Après un flash USB, l'état de l'image est `none` (pas encore d'entrée OTA) ; il devient `valid` après la première OTA réussie.
+    Après le premier flash, le bootloader marque lui-même `ota_0` comme `valid` : il n'y a pas d'auto-test. Le moniteur affiche aussi l'état de GPIO4 (entrée, `Pullup: 0, Pulldown: 0`) et de GPIO10 (sortie).
 
     Puis tester depuis le PC :
     ```bash
@@ -162,7 +162,7 @@ Ce flash USB n'a lieu **qu'une fois**. Ensuite, toutes les mises à jour passent
     export OTA_TOKEN='le token saisi dans menuconfig'
     curl -H "Authorization: Bearer $OTA_TOKEN" http://interphone.local:8080/info
     ```
-    Si `interphone.local` ne résout pas, utiliser l'IP affichée dans la ligne `connecte, IP ...`.
+    Si `interphone.local` ne résout pas, utiliser l'IP affichée dans la ligne `connecte, IP ...`. Sous Linux, la résolution des noms `.local` demande le service Avahi : `sudo systemctl enable --now avahi-daemon` (paquet `avahi-daemon`, et `libnss-mdns` pour `curl`/`ping`).
 11. **Reflash USB plus tard (récupération)** :
     ```bash
     idf.py -p /dev/ttyACM0 flash monitor
