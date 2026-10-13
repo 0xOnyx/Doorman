@@ -23,6 +23,7 @@ void logbuf_write(logbuf_t *lb, const void *data, size_t n);
  * Si *cursor est plus ancien que la fenetre disponible, il saute au plus ancien
  * et *lost (si non NULL) recoit le nombre d'octets sautes, sinon 0.
  * Un curseur au-dela de total est ramene a total (rien a lire, *lost = 0).
+ * Avec n == 0, le curseur est normalise mais rien n'est copie.
  * Renvoie le nombre d'octets copies. */
 size_t logbuf_read(const logbuf_t *lb, uint64_t *cursor, void *out, size_t n, uint64_t *lost);
 

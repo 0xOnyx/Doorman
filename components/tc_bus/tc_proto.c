@@ -1,9 +1,16 @@
 #include "tc_proto.h"
 #include <string.h>
 
+_Static_assert(TC_SEGMENTS_LONG == 3 + 32 && TC_SEGMENTS_SHORT == 3 + 16 && TC_SEGMENTS_ACK == 3 + 4,
+               "nombre de segments = START + LEN + donnees + CHK");
+_Static_assert(TC_MAX_SEGMENTS >= TC_SEGMENTS_LONG, "tampon de segments trop petit");
+
 uint8_t tc_proto_parity(uint32_t raw, unsigned nbits)
 {
     uint8_t p = 1;
+    if (nbits > 32) {
+        nbits = 32;        /* raw >> 32 serait indefini */
+    }
     for (unsigned i = 0; i < nbits; i++) {
         p ^= (uint8_t)((raw >> i) & 1u);
     }

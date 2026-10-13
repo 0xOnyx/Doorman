@@ -78,11 +78,15 @@ typedef enum {
     TC_ERR_PARITY
 } tc_decode_error_t;
 
-/* CHK = 1 XOR b(nbits-1) XOR ... XOR b0 */
+/* CHK = 1 XOR b(nbits-1) XOR ... XOR b0. nbits <= 32 (borne a 32 au-dela). */
 uint8_t tc_proto_parity(uint32_t raw, unsigned nbits);
 
 /* Construit la sequence de segments de la spec 4.3. Renvoie le nombre de segments,
- * 0 si refuse (ACK > 0xF, court > 0xFFFF, is_ack && is_long, tampon trop petit). */
+ * 0 si refuse (ACK > 0xF, court > 0xFFFF, is_ack && is_long, tampon trop petit).
+ * La sequence commence et finit par un mark (nombre impair de segments) : l'emetteur
+ * doit relacher le bus (space) apres le CHK ; avec le RMT c'est le niveau de repos
+ * du canal, pas un segment supplementaire. Les paires (2k, 2k+1) se projettent
+ * directement sur rmt_symbol_word_t, la derniere moitie restant a duree 0. */
 size_t tc_proto_encode(uint32_t raw, bool is_long, bool is_ack, tc_segment_t *out, size_t max);
 
 /* Supprime les segments < glitch_us en les fondant dans leurs voisins. Renvoie le nouveau nombre. */

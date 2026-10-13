@@ -37,12 +37,6 @@ void logbuf_write(logbuf_t *lb, const void *data, size_t n)
 
 size_t logbuf_read(const logbuf_t *lb, uint64_t *cursor, void *out, size_t n, uint64_t *lost)
 {
-    if (lost) {
-        *lost = 0;
-    }
-    if (n == 0) {
-        return 0;
-    }
     uint64_t oldest = lb->total - lb->len;
     uint64_t skipped = 0;
 
