@@ -16,7 +16,7 @@
 
 static const char *TAG = "tc_bus";
 
-#define RX_SYMBOLS 48                      /* un bloc memoire RMT du C3 ; 96 segments */
+#define RX_SYMBOLS 48                      /* un bloc memoire RMT (48 mots sur S3) ; 96 segments, sans DMA */
 /* Sous httpd (5), auto-test (5) et netlog (4) : du bruit sur le bus ne doit jamais affamer l'acces
    distant. Le RMT bufferise en materiel, la latence de decodage n'a pas d'importance en phase 0. */
 #define RX_TASK_PRIO 3
@@ -31,7 +31,7 @@ static tc_bus_rx_cb_t s_cb;
 static void *s_ctx;
 
 static const rmt_receive_config_t s_rx_cfg = {
-    .signal_range_min_ns = 2500,           /* limite materielle ~3.2 us ; le vrai filtre est logiciel */
+    .signal_range_min_ns = 2500,           /* filtre <= 255 ticks de 80 MHz (~3.2 us) ; le vrai filtre est logiciel */
     .signal_range_max_ns = 7000000,        /* > 7 ms au repos = fin de trame */
 };
 

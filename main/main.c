@@ -17,8 +17,12 @@
 #include "tc_bus.h"
 #include "app_selftest.h"
 
-/* Broches interdites pour le bus (spec 2.1) : strapping 2/8/9, flash 11-17, USB 18/19, UART0 20/21. */
-#define TC_PIN_OK(p) ((p) >= 0 && (p) <= 10 && (p) != 2 && (p) != 8 && (p) != 9)
+/* Broches interdites pour le bus (spec 2.1, amendement ESP32-S3) : strapping 0/3/45/46, USB-Serial-JTAG
+   19/20, UART0 43/44, flash et PSRAM du boitier 26-32 ; 22-25 n'existent pas. 33-37 restent libres avec
+   flash et PSRAM quad (ESP32-S3FH4R2), elles ne sont prises qu'en mode octal. */
+#define TC_PIN_OK(p) ((((p) >= 0 && (p) <= 21) || ((p) >= 33 && (p) <= 48)) && \
+                      (p) != 0 && (p) != 3 && (p) != 19 && (p) != 20 && \
+                      (p) != 43 && (p) != 44 && (p) != 45 && (p) != 46)
 _Static_assert(TC_PIN_OK(CONFIG_TC_BUS_TX_GPIO), "TC_BUS_TX_GPIO interdite (strapping, flash, USB ou UART0)");
 _Static_assert(TC_PIN_OK(CONFIG_TC_BUS_RX_GPIO), "TC_BUS_RX_GPIO interdite (strapping, flash, USB ou UART0)");
 _Static_assert(CONFIG_TC_BUS_TX_GPIO != CONFIG_TC_BUS_RX_GPIO, "RX et TX sur la meme broche");

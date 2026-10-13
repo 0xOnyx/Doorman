@@ -5,7 +5,7 @@
 
 /* Tampon circulaire d'octets, logique pure (aucune dependance ESP-IDF).
  * L'appelant assure l'exclusion mutuelle entre write, read et logbuf_total :
- * total est un champ 64 bits, non atomique sur une cible 32 bits (ESP32-C3). */
+ * total est un champ 64 bits, non atomique sur une cible 32 bits (ESP32-S3, 2 coeurs). */
 typedef struct {
     uint8_t *buf;
     size_t cap;
