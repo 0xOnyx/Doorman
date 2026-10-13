@@ -17,6 +17,7 @@ Guide d'utilisation complet : `docs/utilisation.md`
 
 ```bash
 . ~/esp/esp-idf/export.sh
+# ou, identique : source ~/esp/esp-idf/export.sh
 ```
 
 (attention au point suivi d'une espace au début : le script doit modifier le terminal courant). Vérifier ensuite :
