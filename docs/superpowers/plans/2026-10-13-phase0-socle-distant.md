@@ -3459,24 +3459,33 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 Cette tâche n'écrit pas de code. Elle déroule la spec §13.3. Chaque étape est faite par
 l'utilisateur sur la carte **débranchée de la plaque d'interface**, alimentée par l'USB.
 Prérequis : `menuconfig` renseigné (SSID, mot de passe, token ≥ 32, mot de passe SoftAP ≥ 8),
-clé sauvegardée.
+clé sauvegardée. Sans ces secrets, la compilation échoue volontairement (`app_config_check.c`).
+
+Dans chaque terminal :
+```bash
+. ~/esp/esp-idf/export.sh
+cd ~/CLionProjects/Doorman
+export OTA_TOKEN=$(sed -n 's/^CONFIG_APP_OTA_TOKEN="\(.*\)"$/\1/p' sdkconfig)
+```
 
 - [ ] **Étape 1 : premier flash et logs**
 
-```powershell
-idf.py build flash monitor
+```bash
+idf.py build
+idf.py -p /dev/ttyACM0 erase-flash flash monitor
 ```
-Attendu sur la console : `interphone-homekit 0.1.0 | partition ota_0 (valid) | reset poweron`,
-`station demarree`, `connecte, IP ...`, `serveur de logs sur le port 3333`,
+Attendu sur la console : `interphone-homekit 0.1.0 | partition ota_0 (none) | reset poweron`
+(`none` : pas encore d'entrée otadata après un flash USB), le tableau `gpio_dump` (GPIO4 entrée
+sans pull, GPIO10 sortie à 0), `station demarree`, `connecte, IP ...`, `serveur de logs sur le port 3333`,
 `serveur HTTP sur le port 8080`, `reception RMT sur GPIO4`, `image deja validee, pas d'auto-test`.
 
-Depuis le PC (Git Bash) :
+Depuis le PC :
 ```bash
-python tools/logs.py                                   # historique puis flux
-curl -H "Authorization: Bearer $TOKEN" http://interphone.local:8080/info
-curl http://interphone.local:8080/info                 # attendu : 401
+python3 tools/logs.py                                   # historique puis flux
+curl -H "Authorization: Bearer $OTA_TOKEN" http://interphone.local:8080/info
+curl http://interphone.local:8080/info                  # attendu : 401
 ```
-Si `interphone.local` ne résout pas sous Windows, utiliser l'IP affichée dans les logs.
+Si `interphone.local` ne résout pas, utiliser l'IP affichée dans les logs.
 
 - [ ] **Étape 2 : OTA valide**
 
@@ -3487,21 +3496,22 @@ Si `interphone.local` ne résout pas sous Windows, utiliser l'IP affichée dans 
 
 - [ ] **Étape 3 : image non signée ou altérée refusée**
 
-Image altérée (signature corrompue) :
+Image altérée (un octet du corps de l'image modifié ; modifier un des derniers octets ne prouverait
+rien : ils tombent dans le bourrage du secteur de signature, qui n'est pas vérifié) :
 ```bash
-python - <<'EOF'
+python3 - <<'EOF'
 d = bytearray(open("build/interphone-homekit.bin", "rb").read())
-d[-100] ^= 0xFF
+d[0x2000] ^= 0xFF
 open("build/tampered.bin", "wb").write(d)
 EOF
-curl -i -X POST -H "Authorization: Bearer $TOKEN" -H "Expect:" --data-binary @build/tampered.bin http://interphone.local:8080/ota
+curl -i -X POST -H "Authorization: Bearer $OTA_TOKEN" -H "Expect:" --data-binary @build/tampered.bin http://interphone.local:8080/ota
 ```
 Attendu : `400 Bad Request`, `image invalid or unsigned`, logs `OTA echouee`, carte toujours en 0.1.1.
 
 Image sans bloc de signature (les 4 derniers Ko retirés) :
 ```bash
 head -c -4096 build/interphone-homekit.bin > build/unsigned.bin
-curl -i -X POST -H "Authorization: Bearer $TOKEN" -H "Expect:" --data-binary @build/unsigned.bin http://interphone.local:8080/ota
+curl -i -X POST -H "Authorization: Bearer $OTA_TOKEN" -H "Expect:" --data-binary @build/unsigned.bin http://interphone.local:8080/ota
 ```
 Attendu : `400 Bad Request`.
 
@@ -3515,23 +3525,47 @@ reboot, puis `interphone-homekit 0.1.1 | partition ota_1 (valid)`. `/info` : `"v
 
 - [ ] **Étape 5 : SoftAP de secours**
 
-`menuconfig` : mot de passe Wi-Fi volontairement faux, délai SoftAP `60`, délai auto-test `180`.
-`version.txt` → `0.1.3`, `tools/ota.sh`. Attendu : la carte redémarre, ne se connecte pas, le log
-série montre `invariant non respecte` (attendu pour ce test) puis, après 60 s,
-`SoftAP de secours 'interphone-recovery' demarre`, puis `SELFTEST OK`. Connecter le PC au réseau
-`interphone-recovery`, puis :
+`menuconfig` : mot de passe Wi-Fi volontairement faux, délai SoftAP `60`, délai auto-test `180`,
+et activer **APP_BENCH_TEST** (OTA et auto-test) : sans lui, la compilation refuse un auto-test plus
+long que le délai du SoftAP. `version.txt` → `0.1.3`, `tools/ota.sh`. Attendu : la carte redémarre,
+ne se connecte pas, le log série montre `image de test APP_BENCH_TEST` (attendu pour ce test) puis,
+après 60 s, `SoftAP de secours 'interphone-recovery' demarre`, puis `SELFTEST OK`. Connecter le PC
+au réseau `interphone-recovery`, puis :
 ```bash
-curl -H "Authorization: Bearer $TOKEN" http://192.168.4.1:8080/info      # "net":"recovery"
+curl -H "Authorization: Bearer $OTA_TOKEN" http://192.168.4.1:8080/info      # "net":"recovery"
 ```
-Remettre le bon mot de passe et les délais par défaut (600 / 90), `version.txt` → `0.1.4`,
-`tools/ota.sh 192.168.4.1`. Attendu : OTA acceptée, reboot, connexion à la box, `SELFTEST OK`,
-`SoftAP de secours arrete`. Une pause de 1 à 2 s du flux pendant les tentatives de reconnexion
-de la station est normale.
+Remettre le bon mot de passe, les délais par défaut (600 / 90) et **désactiver APP_BENCH_TEST**
+(une image installée ne doit jamais l'avoir), `version.txt` → `0.1.4`, `tools/ota.sh 192.168.4.1`.
+Attendu : OTA acceptée, reboot, connexion à la box, `SELFTEST OK`, `SoftAP de secours arrete`.
+Une pause de 1 à 2 s du flux pendant les tentatives de reconnexion de la station est normale.
 
 - [ ] **Étape 6 : clôture**
 
 Commit du résultat (valeurs de `/info`, taille, remarques) dans `docs/phase0-validation.md`,
 puis installation de la carte près de l'interphone. La phase 1 commence par son propre design.
+
+- [ ] **Étape 6 bis : vérifications complémentaires**
+
+À consigner aussi dans `docs/phase0-validation.md` :
+
+- GPIO10 jamais à l'état haut depuis la mise sous tension, pendant le boot, une OTA et un
+  redémarrage sur panic : oscilloscope ou analyseur logique si disponible ; au minimum multimètre
+  et sortie `gpio_dump` du boot (GPIO4 entrée sans pull, GPIO10 sortie à 0).
+- Une fois câblé, environ 2,9 V au repos sur GPIO4.
+- Image qui plante en boucle (`abort()` 5 s après le boot) envoyée par OTA : retour à la version
+  précédente, `/info` montre `other_state` `aborted`.
+- Coupure d'alimentation pendant l'auto-test d'une nouvelle image : rollback au redémarrage.
+- Ctrl-C sur `curl` en plein envoi : l'OTA suivante fonctionne normalement.
+- Vrai test du SoftAP à 600 s, box éteinte : OTA complète via `192.168.4.1`, chronométrée.
+- Marges de pile (`HB pile libre`) après une OTA et après démarrage/arrêt du SoftAP : au moins 512 o
+  pour chaque tâche.
+- Tas (`heap`, `min_heap`) après le boot, après une OTA, après le SoftAP.
+- Rechercher dans une capture complète de `logs.py` le token et les deux mots de passe
+  (`grep -F "$OTA_TOKEN" capture.log`, idem pour les mots de passe) : aucune occurrence.
+- Client de logs fantôme (portable mis en veille avec `logs.py` ouvert) : mesurer le temps avant
+  qu'un nouveau client soit accepté.
+- À l'installation, raccordement passif au bus : surveiller le rythme de `bus_err` dans les
+  battements de cœur et vérifier que `/info` et l'OTA restent réactifs.
 
 ---
 
