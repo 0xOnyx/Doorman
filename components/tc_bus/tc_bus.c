@@ -17,6 +17,10 @@
 static const char *TAG = "tc_bus";
 
 #define RX_SYMBOLS 48                      /* un bloc memoire RMT du C3 ; 96 segments */
+/* Sous httpd (5), auto-test (5) et netlog (4) : du bruit sur le bus ne doit jamais affamer l'acces
+   distant. Le RMT bufferise en materiel, la latence de decodage n'a pas d'importance en phase 0. */
+#define RX_TASK_PRIO 3
+#define ERR_LOG_PERIOD_US 1000000LL        /* au plus une ligne TC RX ERR par seconde */
 
 static rmt_channel_handle_t s_rx;
 static QueueHandle_t s_queue;
@@ -65,6 +69,8 @@ static void rx_task(void *arg)
     (void)arg;
     size_t nsym;
     tc_segment_t segs[TC_MAX_SEGMENTS];
+    int64_t last_err_log_us = -ERR_LOG_PERIOD_US;
+    uint32_t err_masked = 0;               /* erreurs non loggees depuis la derniere ligne */
     for (;;) {
         if (xQueueReceive(s_queue, &nsym, portMAX_DELAY) != pdTRUE) {
             continue;
@@ -107,8 +113,20 @@ static void rx_task(void *arg)
             }
         } else {
             s_stats.frames_err++;
-            ESP_LOGW(TAG, "TC RX ERR %s n=%u first=%u last=%u", tc_decode_error_name(err),
-                     (unsigned)k, k ? segs[0].duration_us : 0, k ? segs[k - 1].duration_us : 0);
+            int64_t now = esp_timer_get_time();
+            if (now - last_err_log_us < ERR_LOG_PERIOD_US) {
+                err_masked++;
+                continue;
+            }
+            last_err_log_us = now;
+            if (err_masked) {
+                ESP_LOGW(TAG, "TC RX ERR %s n=%u first=%u last=%u (+%lu masquees)", tc_decode_error_name(err),
+                         (unsigned)k, segs[0].duration_us, segs[k - 1].duration_us, (unsigned long)err_masked);
+            } else {
+                ESP_LOGW(TAG, "TC RX ERR %s n=%u first=%u last=%u", tc_decode_error_name(err),
+                         (unsigned)k, segs[0].duration_us, segs[k - 1].duration_us);
+            }
+            err_masked = 0;
         }
     }
 }
@@ -145,7 +163,7 @@ esp_err_t tc_bus_start(tc_bus_rx_cb_t cb, void *ctx)
         ESP_LOGE(TAG, "rmt init: %s", esp_err_to_name(e));
         return e;
     }
-    if (xTaskCreate(rx_task, "tc_rx", 4096, NULL, 10, NULL) != pdPASS) {
+    if (xTaskCreate(rx_task, "tc_rx", 4096, NULL, RX_TASK_PRIO, NULL) != pdPASS) {
         return ESP_FAIL;
     }
     e = rmt_receive(s_rx, s_symbols, sizeof s_symbols, &s_rx_cfg);
