@@ -68,6 +68,9 @@ static void on_telegram(const tc_telegram_t *t, void *ctx)
     (void)t; (void)ctx;
 }
 
+#define HEALTH_PERIOD_S   30                /* periode interne du battement de coeur */
+#define NET_DOWN_MAX_S    (15 * 60)         /* ni station ni SoftAP depuis plus longtemps : redemarrage */
+
 #if CONFIG_APP_HEARTBEAT_S > 0
 /* Marge de pile restante (octets) d'une tache, -1 si elle n'existe pas. */
 static long stack_hwm(const char *name)
@@ -75,7 +78,65 @@ static long stack_hwm(const char *name)
     TaskHandle_t h = xTaskGetHandle(name);
     return h ? (long)uxTaskGetStackHighWaterMark(h) : -1L;
 }
+
+static void heartbeat_log(void)
+{
+    tc_bus_stats_t s;
+    tc_bus_get_stats(&s);
+    ESP_LOGI(TAG, "HB up=%llds heap=%" PRIu32 " min_heap=%" PRIu32 " rssi=%d net=%s bus_ok=%" PRIu32 " bus_err=%" PRIu32,
+             (long long)(esp_timer_get_time() / 1000000), esp_get_free_heap_size(),
+             esp_get_minimum_free_heap_size(), app_net_rssi(),
+             app_net_recovery_ap_active() ? "recovery" : (app_net_is_connected() ? "sta" : "down"),
+             s.frames_ok, s.frames_err);
+    ESP_LOGI(TAG, "HB pile libre (octets) sys_evt=%ld tc_rx=%ld netlog=%ld httpd=%ld esp_timer=%ld main=%ld tiT=%ld",
+             stack_hwm("sys_evt"), stack_hwm("tc_rx"), stack_hwm("netlog"), stack_hwm("httpd"),
+             stack_hwm("esp_timer"), stack_hwm("main"), stack_hwm("tiT"));
+}
 #endif
+
+/* Image validee (pas en attente d'auto-test) : seules ces images s'auto-reparent par redemarrage ;
+ * une image en attente est deja couverte par l'auto-test et son filet. */
+static bool image_validated(void)
+{
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t st;
+    if (run == NULL) {
+        return false;
+    }
+    if (esp_ota_get_state_partition(run, &st) != ESP_OK) {
+        return true;                        /* pas d'etat (premier flash USB) : image consideree validee */
+    }
+    return st != ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+/* Verifie que l'acces distant tient toujours ; sinon redemarre (renvoie seulement si tout va bien). */
+static void health_check(int64_t *net_up_us)
+{
+    int64_t now = esp_timer_get_time();
+    if (app_net_is_connected() || app_net_recovery_ap_active()) {
+        *net_up_us = now;
+    }
+    if (!image_validated()) {
+        return;
+    }
+    const char *reason = NULL;
+    if (!app_ota_is_running()) {
+        reason = "serveur HTTP absent";
+    }
+#if CONFIG_APP_NETLOG_ENABLE
+    else if (!netlog_server_is_listening()) {
+        reason = "serveur de logs absent";
+    }
+#endif
+    else if (now - *net_up_us > (int64_t)NET_DOWN_MAX_S * 1000000LL) {
+        reason = "ni station ni SoftAP depuis plus de 15 min";
+    }
+    if (reason != NULL) {
+        ESP_LOGE(TAG, "SANTE : %s, redemarrage", reason);
+        vTaskDelay(pdMS_TO_TICKS(1000));    /* laisser partir les logs reseau */
+        esp_restart();
+    }
+}
 
 void app_main(void)
 {
@@ -100,18 +161,20 @@ void app_main(void)
     tc_bus_start(on_telegram, NULL);
     app_selftest_start();
 
+    /* Battement de coeur : controles de sante toutes les 30 s, log toutes les APP_HEARTBEAT_S
+       (0 = pas de log, les controles tournent quand meme). */
+    int64_t net_up_us = esp_timer_get_time();
 #if CONFIG_APP_HEARTBEAT_S > 0
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_APP_HEARTBEAT_S * 1000));
-        tc_bus_stats_t s;
-        tc_bus_get_stats(&s);
-        ESP_LOGI(TAG, "HB up=%llds heap=%" PRIu32 " min_heap=%" PRIu32 " rssi=%d net=%s bus_ok=%" PRIu32 " bus_err=%" PRIu32,
-                 (long long)(esp_timer_get_time() / 1000000), esp_get_free_heap_size(),
-                 esp_get_minimum_free_heap_size(), app_net_rssi(),
-                 app_net_recovery_ap_active() ? "recovery" : (app_net_is_connected() ? "sta" : "down"),
-                 s.frames_ok, s.frames_err);
-        ESP_LOGI(TAG, "HB pile libre (octets) sys_evt=%ld tc_rx=%ld netlog=%ld httpd=%ld",
-                 stack_hwm("sys_evt"), stack_hwm("tc_rx"), stack_hwm("netlog"), stack_hwm("httpd"));
-    }
+    int64_t next_log_us = esp_timer_get_time() + (int64_t)CONFIG_APP_HEARTBEAT_S * 1000000LL;
 #endif
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(HEALTH_PERIOD_S * 1000));
+        health_check(&net_up_us);
+#if CONFIG_APP_HEARTBEAT_S > 0
+        if (esp_timer_get_time() >= next_log_us) {
+            next_log_us += (int64_t)CONFIG_APP_HEARTBEAT_S * 1000000LL;
+            heartbeat_log();
+        }
+#endif
+    }
 }

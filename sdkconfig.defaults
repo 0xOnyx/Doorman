@@ -30,3 +30,7 @@ CONFIG_MBEDTLS_HARDWARE_MPI=y
 
 # Les gestionnaires d'evenements Wi-Fi/IP loggent via le hook netlog (+~300 o de pile)
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3072
+
+# Watchdog de taches (initialise au demarrage par defaut, CONFIG_ESP_TASK_WDT_INIT=y) : une tache
+# bloquee redemarre la carte ; une image en attente est alors annulee par le bootloader.
+CONFIG_ESP_TASK_WDT_PANIC=y
