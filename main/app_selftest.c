@@ -56,12 +56,16 @@ static void selftest_task(void *arg)
         esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
         ESP_LOGI(TAG, "SELFTEST OK, image validee (%s)", esp_err_to_name(e));
     } else {
-        ESP_LOGE(TAG, "SELFTEST FAILED (%s), rollback", reason ? reason : "timeout");
+        ESP_LOGE(TAG, "SELFTEST FAILED apres %d s max (%s), rollback", CONFIG_APP_SELFTEST_TIMEOUT_S,
+                 reason ? reason : "timeout");
         vTaskDelay(pdMS_TO_TICKS(1000));          /* laisser partir les logs reseau */
         esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();
         /* on ne revient ici que si le rollback est impossible */
         ESP_LOGE(TAG, "rollback impossible (%s) : validation forcee pour garder l'OTA", esp_err_to_name(e));
-        esp_ota_mark_app_valid_cancel_rollback();
+        e = esp_ota_mark_app_valid_cancel_rollback();
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "validation forcee impossible : %s", esp_err_to_name(e));
+        }
     }
     vTaskDelete(NULL);
 }
@@ -83,6 +87,9 @@ void app_selftest_start(void)
     if (xTaskCreate(selftest_task, "selftest", 8192, NULL, 5, NULL) != pdPASS) {
         /* sans tache d'auto-test l'image resterait en attente et refuserait toute OTA : on valide */
         ESP_LOGE(TAG, "tache d'auto-test impossible : image validee pour garder l'OTA");
-        esp_ota_mark_app_valid_cancel_rollback();
+        esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "validation impossible : %s", esp_err_to_name(e));
+        }
     }
 }
