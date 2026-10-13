@@ -1,5 +1,4 @@
 #include "app_ota.h"
-#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 #include "sdkconfig.h"
@@ -25,7 +24,7 @@ static esp_timer_handle_t s_token_warn_timer;
 static volatile bool s_in_progress;
 static volatile bool s_running;
 static bool s_token_ok;
-static uint8_t *s_buf;
+static uint8_t s_buf[OTA_CHUNK];        /* alloue une fois, statique : pas d'echec possible au boot */
 
 /* Repond et ferme la connexion (ESP_FAIL => httpd ferme le socket, utile quand le corps n'a pas ete lu). */
 static esp_err_t reply_close(httpd_req_t *req, const char *status, const char *msg)
@@ -108,7 +107,10 @@ static esp_err_t reboot_post(httpd_req_t *req)
     ESP_LOGW(TAG, "redemarrage demande par /reboot");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"status\":\"rebooting\",\"reboot_in_ms\":1000}\n");
-    esp_timer_start_once(s_reboot_timer, 1000000);
+    esp_err_t e = esp_timer_start_once(s_reboot_timer, 1000000);
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "reboot non programme: %s", esp_err_to_name(e));
+    }
     return ESP_OK;
 }
 
@@ -118,19 +120,16 @@ void app_ota_start(void)
 {
     s_token_ok = strlen(CONFIG_APP_OTA_TOKEN) >= TOKEN_MIN_LEN;
     const esp_timer_create_args_t rb = { .callback = reboot_cb, .name = "reboot" };
-    esp_timer_create(&rb, &s_reboot_timer);
+    if (esp_timer_create(&rb, &s_reboot_timer) != ESP_OK) {
+        ESP_LOGE(TAG, "creation du timer de reboot impossible");
+    }
     if (!s_token_ok) {
         token_warn_cb(NULL);
         const esp_timer_create_args_t tw = { .callback = token_warn_cb, .name = "token_warn" };
-        esp_timer_create(&tw, &s_token_warn_timer);
-        esp_timer_start_periodic(s_token_warn_timer, 60ULL * 1000000ULL);
+        if (esp_timer_create(&tw, &s_token_warn_timer) == ESP_OK) {
+            esp_timer_start_periodic(s_token_warn_timer, 60ULL * 1000000ULL);
+        }
     }
-    s_buf = malloc(OTA_CHUNK);
-    if (s_buf == NULL) {
-        ESP_LOGE(TAG, "pas de memoire pour le tampon OTA");
-        return;
-    }
-
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = CONFIG_APP_HTTP_PORT;
     cfg.ctrl_port = 32700;               /* distinct de celui du SDK HomeKit (32859) */
@@ -139,6 +138,8 @@ void app_ota_start(void)
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 10;
     cfg.send_wait_timeout = 10;
+    cfg.enable_so_linger = true;         /* un refus (401/413...) avant lecture du corps arrive au client */
+    cfg.linger_timeout = 2;              /* au lieu d'un RST qui masquerait la reponse */
 
     esp_err_t e = httpd_start(&s_server, &cfg);
     if (e != ESP_OK) {
@@ -150,7 +151,7 @@ void app_ota_start(void)
     httpd_register_uri_handler(s_server, &info);
     httpd_register_uri_handler(s_server, &reboot);
     s_running = true;
-    ESP_LOGI(TAG, "serveur HTTP sur le port %d (/info, /ota, /reboot)", CONFIG_APP_HTTP_PORT);
+    ESP_LOGI(TAG, "serveur HTTP sur le port %d", CONFIG_APP_HTTP_PORT);
 }
 
 bool app_ota_is_running(void)

@@ -2689,6 +2689,7 @@ static esp_err_t ota_finish(httpd_req_t *req, const char *status, const char *ms
     httpd_resp_set_status(req, status);
     httpd_resp_set_type(req, reboot ? "application/json" : "text/plain");
     httpd_resp_sendstr(req, msg);
+    ESP_LOGI(TAG, "pile httpd libre min : %u octets", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     if (reboot) {
         ESP_LOGI(TAG, "OTA OK, redemarrage dans 1 s");
         esp_timer_start_once(s_reboot_timer, 1000000);
@@ -2731,23 +2732,19 @@ static esp_err_t ota_post(httpd_req_t *req)
     }
 
     size_t remaining = req->content_len;
-    int timeouts = 0;
     bool first = true;
     while (remaining > 0) {
         size_t want = remaining < OTA_CHUNK ? remaining : OTA_CHUNK;
         int r = httpd_req_recv(req, (char *)s_buf, want);
         if (r == HTTPD_SOCK_ERR_TIMEOUT) {
-            if (++timeouts > 5) {
-                esp_ota_abort(h);
-                return ota_finish(req, "500 Internal Server Error", "receive timeout\n", false);
-            }
-            continue;
+            /* 10 s sans un octet : on abandonne, sinon un client bloque monopolise le serveur */
+            esp_ota_abort(h);
+            return ota_finish(req, "500 Internal Server Error", "receive timeout\n", false);
         }
         if (r <= 0) {
             esp_ota_abort(h);
             return ota_finish(req, "500 Internal Server Error", "receive error\n", false);
         }
-        timeouts = 0;
         e = esp_ota_write(h, s_buf, (size_t)r);
         if (e != ESP_OK) {
             esp_ota_abort(h);
