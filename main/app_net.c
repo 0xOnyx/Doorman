@@ -23,7 +23,6 @@ static esp_timer_handle_t s_recovery_timer;
 static int s_backoff_s = 1;
 static volatile bool s_connected;
 static volatile bool s_ap_active;
-static volatile bool s_ap_stop_deferred;
 static bool s_ap_enabled;
 
 /* --- SoftAP de secours --- */
@@ -73,12 +72,14 @@ static void start_recovery_ap(void)
         e = esp_wifi_set_config(WIFI_IF_AP, &s_ap_cfg);
     }
     if (e != ESP_OK) {
-        ESP_LOGE(TAG, "SoftAP de secours impossible : %s", esp_err_to_name(e));
+        ESP_LOGE(TAG, "SoftAP de secours impossible : %s, nouvel essai dans 60 s", esp_err_to_name(e));
         esp_wifi_set_mode(WIFI_MODE_STA);    /* jamais d'AP mal configure */
+        /* appele depuis recovery_cb : le timer one-shot est deja desarme (esp_timer.c, l'alarme est
+           remise a 0 avant l'appel du callback), start_once est donc valide ici */
+        esp_timer_start_once(s_recovery_timer, 60ULL * 1000000ULL);
         return;
     }
     s_ap_active = true;
-    s_ap_stop_deferred = false;
     ESP_LOGW(TAG, "SoftAP de secours '%s' demarre (192.168.4.1), la station continue d'essayer",
              RECOVERY_AP_SSID);
     /* le changement de mode peut interrompre un essai en cours sans evenement : on en reprogramme un */
@@ -91,8 +92,8 @@ static void start_recovery_ap(void)
 
 static void stop_recovery_ap(void)
 {
-    s_ap_stop_deferred = true;               /* pose d'abord : ota_finished le verra quoi qu'il arrive */
     if (app_ota_in_progress()) {
+        /* app_net_ota_finished() refera l'arret (s_ap_active && s_connected) */
         ESP_LOGI(TAG, "OTA en cours : arret du SoftAP differe");
         return;
     }
@@ -102,7 +103,6 @@ static void stop_recovery_ap(void)
         return;                              /* etat conserve : l'AP tourne toujours */
     }
     s_ap_active = false;
-    s_ap_stop_deferred = false;
     ESP_LOGI(TAG, "SoftAP de secours arrete");
 }
 
