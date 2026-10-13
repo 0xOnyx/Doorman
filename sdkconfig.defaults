@@ -37,3 +37,6 @@ CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3072
 # Watchdog de taches (initialise au demarrage par defaut, CONFIG_ESP_TASK_WDT_INIT=y) : une tache
 # bloquee redemarre la carte ; une image en attente est alors annulee par le bootloader.
 CONFIG_ESP_TASK_WDT_PANIC=y
+
+# SO_LINGER : une reponse de refus (401, 413...) envoyee avant la lecture du corps arrive au client
+CONFIG_LWIP_SO_LINGER=y

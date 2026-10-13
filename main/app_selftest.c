@@ -66,7 +66,9 @@ static void selftest_task(void *arg)
     } else {
         ESP_LOGE(TAG, "SELFTEST FAILED apres %d s max (%s), rollback", CONFIG_APP_SELFTEST_TIMEOUT_S,
                  reason ? reason : "timeout");
-        vTaskDelay(pdMS_TO_TICKS(1000));          /* laisser partir les logs reseau */
+        /* 10 s : laisser a un client de logs le temps de se reconnecter apres le reboot de l'OTA
+           et de voir l'echec avant le rollback */
+        vTaskDelay(pdMS_TO_TICKS(10000));
         esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();
         /* on ne revient ici que si le rollback est impossible */
         ESP_LOGE(TAG, "rollback impossible (%s) : validation forcee pour garder l'OTA", esp_err_to_name(e));
