@@ -127,8 +127,8 @@ Ils n'incluent que `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`, `<string.h>`.
 | `TC_BUS_TX_GPIO` | int | 10 | |
 | `TC_BUS_TX_ENABLE` | bool | n | **Doit rester `n` en phase 0** ; le code TX n'est pas compilé |
 | `TC_BUS_GLITCH_US` | int | 1000 | Segments plus courts fusionnés comme parasites |
-| `TC_BUS_MY_SERIAL` | hex | 0 | Numéro de série de la station intérieure (0 = inconnu, relevé en phase 1) |
-| `TC_BUS_DOOR_ADDRESS` | int | 0 | Adresse de la platine de rue |
+
+`TC_BUS_MY_SERIAL` et `TC_BUS_DOOR_ADDRESS` ne sont ajoutés qu'en phase 1, quand ils servent.
 
 Validation au démarrage (log d'erreur explicite) : SSID vide, token de moins de 32 caractères
 (l'OTA refuse alors toute requête avec 503 et le log le répète toutes les 60 s), mot de passe
@@ -235,7 +235,8 @@ int    app_net_rssi(void);                /* 0 si non connecté */
   Délai 1 s, doublé à chaque échec, plafonné à 60 s. Remis à 1 s sur `IP_EVENT_STA_GOT_IP`.
   **Jamais de reboot.**
 - `IP_EVENT_STA_GOT_IP` → log de l'IP et du RSSI, état « connecté », annulation de la minuterie
-  de secours, arrêt du SoftAP s'il est actif (retour en `WIFI_MODE_STA`).
+  de secours, arrêt du SoftAP s'il est actif (retour en `WIFI_MODE_STA`). Si une OTA est en cours
+  (`app_ota_in_progress()`), l'arrêt du SoftAP est différé jusqu'à sa fin pour ne pas couper le transfert.
 - mDNS : `mdns_init`, `mdns_hostname_set(APP_HOSTNAME)`, `mdns_instance_name_set`. Composant
   `espressif/mdns` du Component Manager (déclaré dans `main/idf_component.yml`).
 - Minuterie de secours : démarrée au boot et à chaque déconnexion, `APP_RECOVERY_AP_DELAY_S`.
@@ -267,7 +268,8 @@ un client garde son curseur, et la différence avec `total` dit combien reste à
 - `netlog_init()` : alloue `APP_NETLOG_BUFFER_KB` Ko, installe le hook. Le hook :
   `vsnprintf` dans un tampon local de 256 octets (ligne tronquée au-delà, jamais de dépassement),
   écriture sur la console avec la fonction `vprintf` d'origine, puis `logbuf_write` sous
-  `portENTER_CRITICAL` (section critique de quelques microsecondes). Il **ne bloque jamais**.
+  `portENTER_CRITICAL(&lock)` avec un `portMUX_TYPE` statique de `netlog.c` (section critique de
+  quelques microsecondes). Il **ne bloque jamais**.
 - `netlog_server_start()` : tâche (pile 3 Ko) avec un socket d'écoute sur `APP_NETLOG_PORT`,
   **un client à la fois** (un second client est accepté puis fermé avec le message `busy`).
   À la connexion : envoi de tout l'historique disponible, puis boucle toutes les 50 ms : copie
@@ -291,16 +293,17 @@ bool ota_size_ok(size_t content_length, size_t partition_size);
 
 ### 9.2 Serveur HTTP
 
-`esp_http_server` dédié, port `APP_HTTP_PORT`, pile 6 Ko, 4 sockets max, `lru_purge_enable`.
+`esp_http_server` dédié, port `APP_HTTP_PORT`, pile 8 Ko (`esp_ota_end` vérifie le SHA-256 et la
+signature RSA dans cette tâche), 4 sockets max, `lru_purge_enable`.
 
 | Route | Auth | Réponse |
 |---|---|---|
-| `GET /info` | Bearer | 200, JSON : `version`, `idf`, `partition`, `ota_state`, `uptime_s`, `heap_free`, `heap_min`, `rssi`, `reset_reason`, `net` (`sta` / `recovery`), `bus_frames_ok`, `bus_frames_err`, `homekit` (`"n/a"` en phase 0) |
+| `GET /info` | Bearer | 200, JSON : `version`, `idf`, `partition`, `ota_state`, `other_partition`, `other_state`, `uptime_s`, `heap_free`, `heap_min`, `rssi`, `reset_reason`, `net` (`sta` / `recovery`), `bus_frames_ok`, `bus_frames_err` |
 | `POST /ota` | Bearer | voir ci-dessous |
 | `POST /reboot` | Bearer | 200 puis `esp_restart` après 1 s |
 
 Codes : 401 token absent ou faux ; 503 token mal configuré (< 32 caractères) ; 404 autre route.
-`app_ota_is_running()` pour l'auto-test.
+`app_ota_is_running()` pour l'auto-test, `app_ota_in_progress()` pour `app_net`.
 
 ### 9.3 `POST /ota`
 
@@ -322,14 +325,24 @@ Le téléchargement est le pic de consommation : la puissance Wi-Fi reste à 52 
 
 - Au démarrage : si `esp_ota_get_state_partition(running)` ≠ `ESP_OTA_IMG_PENDING_VERIFY`, log
   de l'état et rien d'autre.
-- Sinon, tâche (pile 3 Ko) qui attend au plus `APP_SELFTEST_TIMEOUT_S` que **toutes** ces
-  conditions soient vraies : `app_net_is_connected()`, `netlog_server_is_listening()` (ou netlog
-  désactivé), `app_ota_is_running()`, `tc_bus_is_running()`. `APP_SELFTEST_FORCE_FAIL` force l'échec.
+- Sinon, tâche (pile 8 Ko, car le rollback vérifie la signature de l'autre image) qui attend au
+  plus `APP_SELFTEST_TIMEOUT_S` que **toutes** ces conditions soient vraies :
+  - **accès distant assuré** : `app_net_is_connected()` **ou** `app_net_recovery_ap_active()` ;
+  - `netlog_server_is_listening()` (ou netlog désactivé) ;
+  - `app_ota_is_running()` ;
+  - `tc_bus_is_running()`.
+  `APP_SELFTEST_FORCE_FAIL` force l'échec.
 - Succès → `esp_ota_mark_app_valid_cancel_rollback()`, log `SELFTEST OK, image validée`.
 - Échec → log `SELFTEST FAILED (raison)`, `esp_ota_mark_app_invalid_rollback_and_reboot()`.
-  Le bootloader redémarre l'image précédente. Si cet appel échoue (pas d'autre image valide,
-  cas du tout premier flash), on logge et on continue sans valider : le bootloader validera
-  l'image lui-même faute d'alternative.
+  Le bootloader redémarre l'image précédente et marque celle-ci `ESP_OTA_IMG_INVALID`.
+  Si cet appel échoue (aucune autre image valide), on logge et on continue sans valider.
+- Premier flash USB : avec `otadata` vierge, le bootloader marque lui-même `ota_0` valide, l'image
+  n'est jamais en attente et l'auto-test est sauté. C'est attendu.
+- **Invariant de production** : `APP_SELFTEST_TIMEOUT_S` (90) doit rester inférieur à
+  `APP_RECOVERY_AP_DELAY_S` (600). Ainsi une OTA avec un mauvais Wi-Fi est annulée par le rollback
+  avant que le SoftAP n'apparaisse. Le SoftAP ne valide une image que dans le cas inverse, voulu
+  pour le test 5 ou si l'utilisateur l'a configuré ainsi. Si l'invariant n'est pas respecté, un
+  avertissement est loggé au démarrage.
 - Les phases suivantes ajoutent leurs conditions (HomeKit démarré en phase 3).
 
 ## 11. Composant `tc_bus`
@@ -489,7 +502,8 @@ Compilation : `gcc -std=c11 -Wall -Wextra -Werror -I../../components/tc_bus/incl
 - Séquence exacte pour `0x1100` : 19 segments ; `[0]` = 5985 mark ; `[1]` = 2000 space ;
   bits MSB en premier (`0001 0001 0000 0000` → 2000,2000,2000,4000,2000,2000,2000,4000, puis 8 × 2000) ;
   alternance stricte mark/space ; `CHK` = 1 XOR 1 XOR 1 = 1 → 4000 mark.
-- Tolérance : les mêmes trames avec durées à ±20 % dans les fenêtres sont décodées.
+- Tolérance : les mêmes trames avec les segments LEN, données et CHK à ±20 % (4000 → 3200 et 4800,
+  2000 → 1600 et 2400) et le départ à ±100 µs (5885 et 6085 ; 6100 et 6300 pour un ACK) sont décodées.
 - Rejets : durée de bit à 5500 → `TC_ERR_TIMING` ; départ à 5000 → `TC_ERR_START` ; parité
   inversée → `TC_ERR_PARITY` ; 20 segments → `TC_ERR_LENGTH`.
 - Parasites : insertion d'un segment de 300 µs au milieu d'un bit → fusion, trame décodée ;
@@ -517,13 +531,15 @@ sans `Bearer `, `NULL` refusés ; `ota_size_ok(0)`, `ota_size_ok(part+1)` faux, 
 | 1 | Flash USB de 0.1.0, `python tools/logs.py interphone.local` | Historique de démarrage puis flux en direct ; `GET /info` répond |
 | 2 | `version.txt` → 0.1.1, `tools/ota.sh` | 200, reboot, `SELFTEST OK`, `/info` affiche 0.1.1 |
 | 3 | Build dans `build-unsigned/` avec `CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=n`, POST | 400 `image invalid or unsigned`, carte toujours en 0.1.1 |
-| 4 | Build 0.1.2 avec `APP_SELFTEST_FORCE_FAIL=y`, POST | Reboot, `SELFTEST FAILED`, second reboot, `/info` affiche 0.1.1 et `ota_state` de l'autre slot = aborted |
-| 5 | Build 0.1.3 avec mauvais mot de passe Wi-Fi, `APP_RECOVERY_AP_DELAY_S=60` et `APP_SELFTEST_TIMEOUT_S=180`, POST | Après 60 s, SSID `interphone-recovery` visible ; `/info` sur `192.168.4.1:8080` ; POST d'une 0.1.4 corrigée → retour sur la box |
+| 4 | Build 0.1.2 avec `APP_SELFTEST_FORCE_FAIL=y`, POST | Reboot, `SELFTEST FAILED`, second reboot, `/info` affiche `version` 0.1.1 et `other_state` = `invalid` |
+| 5 | Build 0.1.3 avec mauvais mot de passe Wi-Fi, `APP_RECOVERY_AP_DELAY_S=60` et `APP_SELFTEST_TIMEOUT_S=180`, POST | Après 60 s, SSID `interphone-recovery` visible ; l'auto-test passe grâce au SoftAP (`SELFTEST OK`) ; `/info` sur `192.168.4.1:8080` ; POST d'une 0.1.4 corrigée → retour sur la box |
 
-Note sur le cas 5 : avec le délai d'auto-test par défaut (90 s), une image sans Wi-Fi serait annulée
-par le rollback **avant** l'apparition du SoftAP (600 s). C'est le comportement voulu en production :
+Note sur le cas 5 : avec les délais par défaut (auto-test 90 s, SoftAP 600 s), une image sans Wi-Fi
+est annulée par le rollback **avant** l'apparition du SoftAP. C'est le comportement voulu en production :
 le rollback couvre « mauvais Wi-Fi par erreur dans une OTA », le SoftAP couvre « la box a changé »
-sur une image déjà validée. Le test 5 allonge donc l'auto-test pour observer le SoftAP.
+sur une image déjà validée. Le test 5 inverse volontairement les délais pour observer le SoftAP et
+vérifier qu'il accepte une OTA (ce qui exige que l'image soit validée, d'où la condition « ou SoftAP
+actif » de l'auto-test, §10).
 
 ## 14. Gestion des erreurs et robustesse
 
@@ -531,8 +547,8 @@ sur une image déjà validée. Le test 5 allonge donc l'auto-test pour observer 
 - Le hook de log et le callback ISR du RMT n'allouent pas et ne bloquent pas.
 - Toutes les tâches ont une pile dimensionnée et sont nommées (`netlog`, `tc_rx`, `selftest`).
 - Les tampons de réception (OTA 4 Ko, RMT 48 symboles) sont alloués une fois au démarrage.
-- Budget RAM estimé pour les ajouts de la phase 0 : tampon de logs 12 Ko, piles 16 Ko, httpd et
-  sockets ~10 Ko. Mémoire libre attendue après démarrage avec Wi-Fi : > 150 Ko (vérifiée via `/info`).
+- Budget RAM estimé pour les ajouts de la phase 0 : tampon de logs 12 Ko, piles 23 Ko (netlog 3,
+  httpd 8, tc_rx 4, selftest 8), sockets et tampons ~10 Ko. Mémoire libre attendue après démarrage avec Wi-Fi : > 150 Ko (vérifiée via `/info`).
 
 ## 15. Points réservés pour les phases suivantes (ne pas traiter en phase 0)
 
