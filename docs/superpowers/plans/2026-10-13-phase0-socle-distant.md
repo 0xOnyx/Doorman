@@ -432,7 +432,7 @@ static int t_checks = 0;
 
 `test/host/Makefile` :
 ```make
-CC ?= gcc
+CC := gcc
 CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 \
           -I../../components/tc_bus/include -I../../components/netlog/include -I../../main
 
@@ -1274,6 +1274,7 @@ static void test_decode_rejects(void)
     tc_segment_t s[TC_MAX_SEGMENTS];
     tc_telegram_t t;
     tc_decode_error_t e;
+    memset(&t, 0, sizeof t);
     size_t n = enc(0x1100, false, false, s);
 
     tc_segment_t m[TC_MAX_SEGMENTS];
@@ -1307,16 +1308,18 @@ static void test_merge_glitches(void)
     tc_telegram_t t;
     tc_decode_error_t e;
 
-    /* parasite au milieu du segment 5 (2000 space) : 900 space, 300 mark, 800 space */
+    /* parasite au milieu du segment 5 (bit 12 = 1, 4000 space) : 1800 space, 300 mark, 1900 space.
+       Les deux morceaux restent >= 1000 : seul le 300 est un parasite. */
     tc_segment_t m[TC_MAX_SEGMENTS];
+    memset(&t, 0, sizeof t);
     memcpy(m, s, 5 * sizeof m[0]);
-    m[5] = (tc_segment_t){ 900, false };
+    m[5] = (tc_segment_t){ 1800, false };
     m[6] = (tc_segment_t){ 300, true };
-    m[7] = (tc_segment_t){ 800, false };
+    m[7] = (tc_segment_t){ 1900, false };
     memcpy(&m[8], &s[6], (n - 6) * sizeof m[0]);
     size_t k = tc_proto_merge_glitches(m, n + 2, 1000);
     CHECK_EQ(k, 19);
-    CHECK_EQ(m[5].duration_us, 2000);
+    CHECK_EQ(m[5].duration_us, 4000);
     CHECK(dec(m, k, &t, &e));
     CHECK_EQ(t.raw, 0x1100);
 
@@ -1887,9 +1890,9 @@ bool netlog_server_is_listening(void);
 
 static const char *TAG = "netlog";
 
-#define LINE_MAX   256
-#define CHUNK_MAX  512
-#define POLL_MS    50
+#define NETLOG_LINE_MAX   256     /* pas LINE_MAX : deja defini par newlib */
+#define CHUNK_MAX         512
+#define POLL_MS           50
 
 static logbuf_t s_lb;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -1900,7 +1903,7 @@ static int s_port;
 /* Hook esp_log : console d'origine + tampon circulaire. Ne bloque jamais. */
 static int netlog_vprintf(const char *fmt, va_list ap)
 {
-    char line[LINE_MAX];
+    char line[NETLOG_LINE_MAX];
     va_list ap2;
     va_copy(ap2, ap);
     int n = vsnprintf(line, sizeof line, fmt, ap2);
@@ -2068,17 +2071,8 @@ Dans `main/main.c` : ajouter `#include "netlog.h"` et, dans `app_main`, juste ap
     }
 #endif
 ```
-Et à la fin de `app_main` (le serveur est démarré après le réseau à la tâche 8, mais il peut
-l'être dès maintenant, le socket s'ouvre sur `0.0.0.0` sans attendre le Wi-Fi) :
-```c
-#if CONFIG_APP_NETLOG_ENABLE
-    netlog_server_start(CONFIG_APP_NETLOG_PORT);
-#endif
-```
-
-Attention : sans pile TCP/IP initialisée (`esp_netif_init`), `socket()` échoue. Comme `app_net`
-n'existe qu'à la tâche 8, le serveur loggera `socket: errno ...` au boot sur cette version
-intermédiaire. C'est attendu ; la tâche 8 place `netlog_server_start` après `app_net_start`.
+Ne pas appeler `netlog_server_start` dans cette tâche : sans pile TCP/IP initialisée
+(`esp_netif_init`, tâche 8), `socket()` ne doit pas être appelé. La tâche 8 l'ajoute après `app_net_start`.
 
 - [ ] **Step 4 : build**
 
@@ -2396,7 +2390,6 @@ de démarrage et la fin de `app_main` par :
     netlog_server_start(CONFIG_APP_NETLOG_PORT);
 #endif
 ```
-(et supprimer l'appel à `netlog_server_start` placé à la tâche 7, s'il est à un autre endroit).
 
 - [ ] **Step 5 : build**
 
