@@ -443,17 +443,57 @@ static void test_whitelist(void)
     CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x1100, .is_response = true, .type = TC_TYPE_OPEN_DOOR }));
     /* NULL */
     CHECK(!tc_proto_tx_allowed(NULL));
-    /* balayage : aucun raw court hors 0x11xx / 0x12xx n'est autorise */
+    /* raw trop large pour une trame courte : jamais autorise, classe UNKNOWN */
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x00011100, .type = TC_TYPE_OPEN_DOOR }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0xFFFF1200, .type = TC_TYPE_LIGHT }));
+    CHECK_EQ(cls(0xDEAD1100, false, false).type, TC_TYPE_UNKNOWN);
+
+    /* balayage exhaustif des trames courtes contre un oracle independant du classifieur :
+       seuls 0x11xx et 0x12xx sont autorises ; jamais en reponse ; jamais declares longs */
+    size_t bad = 0;
     for (uint32_t raw = 0; raw <= 0xFFFF; raw++) {
+        bool expected = ((raw >> 8) == 0x11 || (raw >> 8) == 0x12);
         tc_telegram_t t = cls(raw, false, false);
-        bool allowed = tc_proto_tx_allowed(&t);
-        bool expected = (t.type == TC_TYPE_OPEN_DOOR || t.type == TC_TYPE_LIGHT);
-        if (allowed != expected) {
-            CHECK(allowed == expected);
-            break;
+        if (tc_proto_tx_allowed(&t) != expected) {
+            if (bad == 0) {
+                printf("  premier ecart court : raw=0x%04lX\n", (unsigned long)raw);
+            }
+            bad++;
+        }
+        t = cls(raw, false, true);
+        if (tc_proto_tx_allowed(&t)) {
+            bad++;
+        }
+        t = cls(raw, true, false);
+        if (tc_proto_tx_allowed(&t)) {
+            bad++;
         }
     }
-    CHECK(true);
+    CHECK_EQ(bad, 0);
+
+    /* trames longues 0x1SSSSSxx : autorisees ssi bit 7 et octet bas != 0x41 ; les autres types jamais */
+    bad = 0;
+    static const uint32_t serials[3] = { 0x00000, 0xC30BA, 0xFFFFF };
+    for (unsigned type = 0; type < 16; type++) {
+        for (size_t si = 0; si < 3; si++) {
+            for (uint32_t low = 0; low <= 0xFF; low++) {
+                uint32_t raw = ((uint32_t)type << 28) | (serials[si] << 8) | low;
+                bool expected = (type == 1 && (low & 0x80) && low != 0x41);
+                tc_telegram_t t = cls(raw, true, false);
+                if (tc_proto_tx_allowed(&t) != expected) {
+                    if (bad == 0) {
+                        printf("  premier ecart long : raw=0x%08lX\n", (unsigned long)raw);
+                    }
+                    bad++;
+                }
+                t = cls(raw, true, true);
+                if (tc_proto_tx_allowed(&t)) {
+                    bad++;
+                }
+            }
+        }
+    }
+    CHECK_EQ(bad, 0);
 }
 
 static void test_names(void)

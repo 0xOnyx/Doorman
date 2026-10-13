@@ -275,7 +275,7 @@ void tc_proto_classify(tc_telegram_t *t)
             t->type = (raw & 0x40u) ? TC_TYPE_INTERNAL_CALL : TC_TYPE_DOOR_CALL;
             t->serial = serial;
             t->address = address;
-            t->payload = (raw >> 7) & 1;
+            t->payload = (raw >> 7) & 1;   /* bit 7 : drapeau observe sur le bus, sens inconnu */
             return;
         case 0x1:
             if (low == 0x41) {
@@ -317,7 +317,10 @@ void tc_proto_classify(tc_telegram_t *t)
         return;   /* UNKNOWN, payload = raw */
     }
 
-    /* trame courte (16 bits) */
+    /* trame courte (16 bits) : un raw plus large est incoherent -> UNKNOWN */
+    if (raw > 0xFFFF) {
+        return;
+    }
     uint8_t hi8 = (uint8_t)((raw >> 8) & 0xFF);
     switch (hi8) {
     case 0x11:
