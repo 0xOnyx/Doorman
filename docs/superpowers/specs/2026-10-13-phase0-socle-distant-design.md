@@ -96,8 +96,8 @@ DoormanJerdos/
 │   ├── test_logbuf.c
 │   └── test_ota_auth.c
 ├── tools/
-│   ├── ota.sh                  # build + POST /ota + suivi des logs
-│   └── logs.py                 # client TCP 3333 (portable Windows, pas besoin de nc)
+│   ├── ota.sh                  # build + POST /ota + suivi des logs ; argument hôte (défaut interphone.local)
+│   └── logs.py                 # client TCP 3333 (portable Windows, pas besoin de nc) ; argument hôte
 └── docs/superpowers/specs/     # ce document
 ```
 
@@ -133,7 +133,9 @@ Ils n'incluent que `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`, `<string.h>`.
 
 Validation au démarrage (log d'erreur explicite) : SSID vide, token de moins de 32 caractères
 (l'OTA refuse alors toute requête avec 503 et le log le répète toutes les 60 s), mot de passe
-du SoftAP de moins de 8 caractères (le SoftAP est alors désactivé, et le log le dit).
+du SoftAP de moins de 8 caractères (le SoftAP est alors désactivé, et le log le dit). Le README
+liste ces trois valeurs comme obligatoires avant le premier flash : sans mot de passe de SoftAP,
+le chemin de secours « box changée » n'existe pas en production.
 
 ### 5.2 `sdkconfig.defaults` (options clés)
 
@@ -281,7 +283,9 @@ un client garde son curseur, et la différence avec `total` dit combien reste à
   À la connexion : envoi de tout l'historique disponible, puis boucle toutes les 50 ms : copie
   des nouveaux octets et `send` non bloquant. Si `send` renvoie `EAGAIN`, les octets non envoyés
   restent à lire au tour suivant ; si entre-temps le tampon a écrasé la position du client, le client
-  reçoit `[netlog: N octets perdus]` et reprend au plus ancien disponible.
+  reçoit `[netlog: N octets perdus]` et reprend au plus ancien disponible. `logbuf_read` est appelé
+  sous le **même** spinlock que `logbuf_write`, par petits blocs (≤ 512 octets) pour garder la
+  section critique courte.
 - `netlog_server_is_listening()` pour l'auto-test.
 - Aucun secret n'est loggé : le code ne logge jamais `APP_WIFI_PASSWORD`, `APP_OTA_TOKEN`,
   `APP_RECOVERY_AP_PASSWORD`. Une revue le vérifie à chaque phase.
@@ -313,7 +317,12 @@ Codes : 401 token absent ou faux ; 503 token mal configuré (< 32 caractères) ;
 
 Valeurs de `ota_state` et `other_state` : `new`, `pending_verify`, `valid`, `invalid`, `aborted`,
 `undefined`, et `none` si `esp_ota_get_state_partition` renvoie `ESP_ERR_NOT_FOUND` (slot jamais
-écrit, cas du premier flash). `other_state` est lu dans le handler à chaque requête, pas mis en cache.
+écrit, cas du premier flash). `ota_state` et `other_state` sont lus dans le handler à chaque requête,
+jamais mis en cache (l'état de l'image courante change quand l'auto-test la valide) ; la lecture
+au boot de §6 ne sert qu'au log de démarrage.
+
+Quand une OTA se termine sans reboot (toute réponse 4xx/5xx), `app_ota` appelle `app_net_ota_finished()`
+pour que `app_net` exécute l'arrêt différé du SoftAP s'il était en attente (§7.2).
 
 ### 9.3 `POST /ota`
 
@@ -341,7 +350,9 @@ Le téléchargement est le pic de consommation : la puissance Wi-Fi reste à 52 
   - `netlog_server_is_listening()` (ou netlog désactivé) ;
   - `app_ota_is_running()` ;
   - `tc_bus_is_running()`.
-  `APP_SELFTEST_FORCE_FAIL` force l'échec.
+  `APP_SELFTEST_FORCE_FAIL` force l'échec **au moment où toutes les conditions viennent d'être
+  remplies** (pas au boot), afin que `SELFTEST FAILED` soit visible dans les logs réseau avant le
+  rollback. Si elles ne sont jamais remplies, l'échec survient au timeout comme d'habitude.
 - Succès → `esp_ota_mark_app_valid_cancel_rollback()`, log `SELFTEST OK, image validée`.
 - Échec → log `SELFTEST FAILED (raison)`, `esp_ota_mark_app_invalid_rollback_and_reboot()` :
   l'image courante est marquée `ESP_OTA_IMG_INVALID` et le bootloader redémarre l'autre.
@@ -551,7 +562,9 @@ est annulée par le rollback **avant** l'apparition du SoftAP. C'est le comporte
 le rollback couvre « mauvais Wi-Fi par erreur dans une OTA », le SoftAP couvre « la box a changé »
 sur une image déjà validée. Le test 5 inverse volontairement les délais pour observer le SoftAP et
 vérifier qu'il accepte une OTA (ce qui exige que l'image soit validée, d'où la condition « ou SoftAP
-actif » de l'auto-test, §10).
+actif » de l'auto-test, §10). Pendant ce test, la station continue ses tentatives de reconnexion
+(toutes les 60 s au plus) et chaque tentative sort la radio du canal du SoftAP pendant 1 à 2 s :
+une courte pause du flux de logs ou du transfert OTA est normale, pas un échec.
 
 ## 14. Gestion des erreurs et robustesse
 
