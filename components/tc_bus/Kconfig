@@ -14,4 +14,20 @@ menu "Bus TC (tc_bus)"
         int "Segments plus courts que ceci sont des parasites (us)"
         range 100 2000
         default 1000
+    config TC_BUS_MY_SERIAL
+        hex "Numero de serie de la station interieure (20 bits)"
+        default 0x0
+        help
+            Numero de serie 20 bits (0x00000..0xFFFFF) de la station interieure de l'appartement.
+            Les telegrammes qui la concernent sont marques "<< POUR MOI" dans les logs et comptes
+            dans /info. 0 = inconnu : aucun repere. Pour le relever, sonner depuis la platine
+            et lire le champ serial du DOOR_CALL (docs/utilisation.md, section 7).
+    config TC_BUS_DOOR_ADDRESS
+        int "Adresse de la platine de rue (0..63)"
+        range 0 63
+        default 0
+        help
+            Adresse de la platine de rue. Un OPEN_DOOR court ne porte pas de numero de serie :
+            il n'est marque "pour moi" que s'il vise cette adresse et suit de moins de 3 minutes
+            un appel pour moi.
 endmenu
