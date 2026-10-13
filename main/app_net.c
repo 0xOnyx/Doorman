@@ -7,6 +7,7 @@
 #include "esp_event.h"
 #include "esp_timer.h"
 #include "mdns.h"
+#include "app_ota.h"
 
 static const char *TAG = "net";
 
@@ -26,8 +27,40 @@ static volatile bool s_ap_stop_deferred;
 static bool s_ap_enabled;
 
 /* --- SoftAP de secours : complete a la tache 11 --- */
-static void start_recovery_ap(void) { }
-static void stop_recovery_ap(void) { }
+#define RECOVERY_AP_SSID "interphone-recovery"
+
+static void start_recovery_ap(void)
+{
+    static wifi_config_t ap;                 /* statique : on est dans la tache esp_timer */
+    memset(&ap, 0, sizeof ap);
+    strlcpy((char *)ap.ap.ssid, RECOVERY_AP_SSID, sizeof ap.ap.ssid);
+    ap.ap.ssid_len = strlen(RECOVERY_AP_SSID);
+    strncpy((char *)ap.ap.password, CONFIG_APP_RECOVERY_AP_PASSWORD, sizeof ap.ap.password);
+    ap.ap.channel = 1;
+    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    ap.ap.max_connection = 2;
+    ap.ap.pmf_cfg.required = false;
+
+    LOG_IF_ERR(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    LOG_IF_ERR(esp_wifi_set_config(WIFI_IF_AP, &ap));
+    s_ap_active = true;
+    s_ap_stop_deferred = false;
+    ESP_LOGW(TAG, "SoftAP de secours '%s' demarre (192.168.4.1), la station continue d'essayer",
+             RECOVERY_AP_SSID);
+}
+
+static void stop_recovery_ap(void)
+{
+    if (app_ota_in_progress()) {
+        s_ap_stop_deferred = true;
+        ESP_LOGI(TAG, "OTA en cours : arret du SoftAP differe");
+        return;
+    }
+    LOG_IF_ERR(esp_wifi_set_mode(WIFI_MODE_STA));
+    s_ap_active = false;
+    s_ap_stop_deferred = false;
+    ESP_LOGI(TAG, "SoftAP de secours arrete");
+}
 
 /* Programme le prochain essai de connexion avec le delai courant, puis double le delai (max 60 s). */
 static void schedule_reconnect(void)
