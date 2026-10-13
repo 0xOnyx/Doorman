@@ -10,3 +10,6 @@ test/host/test_tc_proto
 test/host/test_logbuf
 test/host/test_ota_auth
 .idea/
+log/
+cmake-build-*/
+__pycache__/
