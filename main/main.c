@@ -9,6 +9,7 @@
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "netlog.h"
 
 static const char *TAG = "main";
 
@@ -52,6 +53,11 @@ static void nvs_init(void)
 void app_main(void)
 {
     bus_gpio_safe();
+#if CONFIG_APP_NETLOG_ENABLE
+    if (netlog_init((size_t)CONFIG_APP_NETLOG_BUFFER_KB * 1024) != ESP_OK) {
+        ESP_LOGE(TAG, "netlog_init: pas de memoire");
+    }
+#endif
     nvs_init();
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
