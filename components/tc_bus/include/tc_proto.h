@@ -89,7 +89,9 @@ uint8_t tc_proto_parity(uint32_t raw, unsigned nbits);
  * directement sur rmt_symbol_word_t, la derniere moitie restant a duree 0. */
 size_t tc_proto_encode(uint32_t raw, bool is_long, bool is_ack, tc_segment_t *out, size_t max);
 
-/* Supprime les segments < glitch_us en les fondant dans leurs voisins. Renvoie le nouveau nombre. */
+/* Supprime les segments < glitch_us en les fondant dans leurs voisins (le plus court d'abord).
+ * Renvoie le nouveau nombre. A appeler AVANT tc_proto_strip_trailing_idle : un parasite
+ * pendant le repos de fin doit etre fondu dans ce repos avant qu'il ne soit retire. */
 size_t tc_proto_merge_glitches(tc_segment_t *segs, size_t n, uint16_t glitch_us);
 
 /* Supprime les segments de fin > TC_START_ACK_MAX_US (repos enregistre par le RMT). */

@@ -3083,8 +3083,8 @@ static void rx_task(void *arg)
             continue;                       /* evenement vide ou parasite isole */
         }
         s_stats.last_rx_us = esp_timer_get_time();
-        k = tc_proto_strip_trailing_idle(segs, k);
-        k = tc_proto_merge_glitches(segs, k, CONFIG_TC_BUS_GLITCH_US);
+        k = tc_proto_merge_glitches(segs, k, CONFIG_TC_BUS_GLITCH_US);   /* d'abord : un parasite dans le repos */
+        k = tc_proto_strip_trailing_idle(segs, k);                        /* ensuite : retirer le repos */
 
         tc_telegram_t t;
         tc_decode_error_t err;

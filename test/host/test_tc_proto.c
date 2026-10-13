@@ -278,6 +278,42 @@ static void test_merge_glitches(void)
     CHECK_EQ(tc_proto_merge_glitches(m, 1, 1000), 0);
     CHECK_EQ(tc_proto_merge_glitches(m, 0, 1000), 0);
 
+    /* parasite pres d'un front : [4000 M, 400 S, 300 M, 1300 S] doit redonner [4000 M, 2000 S],
+       pas [4700 M, 1300 S] : le plus court (300) est fondu en premier */
+    m[0] = (tc_segment_t){ 4000, true };
+    m[1] = (tc_segment_t){ 400, false };
+    m[2] = (tc_segment_t){ 300, true };
+    m[3] = (tc_segment_t){ 1300, false };
+    CHECK_EQ(tc_proto_merge_glitches(m, 4, 1000), 2);
+    CHECK_EQ(m[0].duration_us, 4000);
+    CHECK_EQ(m[1].duration_us, 2000);
+    CHECK(m[0].mark && !m[1].mark);
+
+    /* deux parasites de meme duree : le premier gagne, l'alternance est preservee */
+    m[0] = (tc_segment_t){ 2000, true };
+    m[1] = (tc_segment_t){ 100, false };
+    m[2] = (tc_segment_t){ 100, true };
+    m[3] = (tc_segment_t){ 1800, false };
+    CHECK_EQ(tc_proto_merge_glitches(m, 4, 1000), 2);
+    CHECK_EQ(m[0].duration_us, 2200);
+    CHECK_EQ(m[1].duration_us, 1800);
+    CHECK(m[0].mark != m[1].mark);
+
+    /* parasite pendant le repos enregistre : merge avant strip -> 19 segments */
+    memcpy(m, s, n * sizeof m[0]);
+    m[n] = (tc_segment_t){ 1500, false };
+    m[n + 1] = (tc_segment_t){ 300, true };
+    m[n + 2] = (tc_segment_t){ 7000, false };
+    k = tc_proto_merge_glitches(m, n + 3, 1000);
+    CHECK_EQ(k, 20);
+    CHECK_EQ(m[19].duration_us, 8800);
+    CHECK_EQ(tc_proto_strip_trailing_idle(m, k), 19);
+    CHECK(dec(m, 19, &t, &e));
+
+    /* segs == NULL */
+    CHECK_EQ(tc_proto_merge_glitches(NULL, 5, 1000), 0);
+    CHECK(!dec(NULL, 19, &t, &e)); CHECK_EQ(e, TC_ERR_LENGTH);
+
     /* saturation : 65000 + 100 + 65000 est borne a 65535 */
     m[0] = (tc_segment_t){ 65000, true };
     m[1] = (tc_segment_t){ 100, false };
@@ -307,6 +343,11 @@ int main(void)
     RUN(test_encode_0x1100);
     RUN(test_encode_long_and_ack);
     RUN(test_encode_refus);
-    RUN(test_encode_edges); RUN(test_decode_roundtrip); RUN(test_decode_tolerance); RUN(test_decode_rejects); RUN(test_merge_glitches); RUN(test_strip_trailing_idle);
+    RUN(test_encode_edges);
+    RUN(test_decode_roundtrip);
+    RUN(test_decode_tolerance);
+    RUN(test_decode_rejects);
+    RUN(test_merge_glitches);
+    RUN(test_strip_trailing_idle);
     T_END();
 }

@@ -107,29 +107,33 @@ const char *tc_decode_error_name(tc_decode_error_t e)
 /* --- decodage, parasites, repos de fin --- */
 size_t tc_proto_merge_glitches(tc_segment_t *segs, size_t n, uint16_t glitch_us)
 {
-    bool changed = true;
-    while (changed && n > 0) {
-        changed = false;
-        for (size_t i = 0; i < n; i++) {
-            if (segs[i].duration_us >= glitch_us) {
-                continue;
+    if (segs == NULL) {
+        return 0;
+    }
+    for (;;) {
+        /* le plus court d'abord : un parasite pres d'un front laisse un residu lui aussi
+           sous le seuil ; fondre le vrai parasite en premier remet le residu au bon bit */
+        size_t i = n;
+        for (size_t k = 0; k < n; k++) {
+            if (segs[k].duration_us < glitch_us && (i == n || segs[k].duration_us < segs[i].duration_us)) {
+                i = k;
             }
-            if (i > 0 && i + 1 < n) {
-                /* fondre i-1, i, i+1 dans i-1 (les voisins ont le meme niveau) */
-                uint32_t sum = (uint32_t)segs[i - 1].duration_us + segs[i].duration_us + segs[i + 1].duration_us;
-                segs[i - 1].duration_us = (sum > 0xFFFF) ? 0xFFFF : (uint16_t)sum;
-                memmove(&segs[i], &segs[i + 2], (n - i - 2) * sizeof(*segs));
-                n -= 2;
-            } else {
-                /* en tete ou en queue : simple suppression */
-                memmove(&segs[i], &segs[i + 1], (n - i - 1) * sizeof(*segs));
-                n -= 1;
-            }
-            changed = true;
-            break;
+        }
+        if (i == n) {
+            return n;
+        }
+        if (i > 0 && i + 1 < n) {
+            /* fondre i-1, i, i+1 dans i-1 (les voisins ont le meme niveau) */
+            uint32_t sum = (uint32_t)segs[i - 1].duration_us + segs[i].duration_us + segs[i + 1].duration_us;
+            segs[i - 1].duration_us = (sum > 0xFFFF) ? 0xFFFF : (uint16_t)sum;
+            memmove(&segs[i], &segs[i + 2], (n - i - 2) * sizeof(*segs));
+            n -= 2;
+        } else {
+            /* en tete ou en queue : simple suppression */
+            memmove(&segs[i], &segs[i + 1], (n - i - 1) * sizeof(*segs));
+            n -= 1;
         }
     }
-    return n;
 }
 
 size_t tc_proto_strip_trailing_idle(tc_segment_t *segs, size_t n)
@@ -159,6 +163,10 @@ bool tc_proto_decode(const tc_segment_t *segs, size_t n, tc_telegram_t *out, tc_
     uint32_t raw = 0;
     memset(&t, 0, sizeof t);
 
+    if (segs == NULL) {
+        e = TC_ERR_LENGTH;
+        goto done;
+    }
     if (n == TC_SEGMENTS_ACK) {
         nbits = 4;
     } else if (n == TC_SEGMENTS_SHORT) {
