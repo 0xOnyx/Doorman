@@ -163,7 +163,13 @@ static esp_err_t ota_post(httpd_req_t *req)
     ESP_LOGI(TAG, "OTA: %u octets vers %s", (unsigned)req->content_len, part->label);
 
     esp_ota_handle_t h = 0;
-    esp_err_t e = esp_ota_begin(part, req->content_len, &h);
+    /* Effacer aussi le secteur qui suit l'image : sinon le bloc de signature d'un envoi precedent
+       peut y rester et completer une image tronquee (constate sur l'etabli). */
+    size_t erase_len = req->content_len + 4096;
+    if (erase_len > part->size) {
+        erase_len = part->size;
+    }
+    esp_err_t e = esp_ota_begin(part, erase_len, &h);
     if (e == ESP_ERR_OTA_ROLLBACK_INVALID_STATE) {
         return ota_finish(req, "409 Conflict", "self-test pending\n", false);
     }
