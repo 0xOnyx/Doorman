@@ -106,6 +106,18 @@ void tc_proto_classify(tc_telegram_t *t);
 /* Liste blanche d'emission : OPEN_DOOR, OPEN_DOOR_LONG, LIGHT, et rien d'autre. */
 bool tc_proto_tx_allowed(const tc_telegram_t *t);
 
+/* Le telegramme concerne-t-il la station interieure my_serial ? Faux si my_serial == 0.
+ * Vrai pour DOOR_CALL, INTERNAL_CALL, FLOOR_CALL, START_TALKING, CONTROL_FUNCTION, OPEN_DOOR_LONG
+ * et REQUEST_VERSION dont serial == my_serial ; pour un OPEN_DOOR court dont address == door_address
+ * seulement si recent_call_for_me (un appel pour moi vient d'etre vu : l'appelant gere la fenetre),
+ * car un OPEN_DOOR court ne porte pas de numero de serie. */
+bool tc_proto_is_for_me(const tc_telegram_t *t, uint32_t my_serial, uint8_t door_address, bool recent_call_for_me);
+
+/* Convertit des mots rmt_symbol_word_t (passes en uint32_t : duration0 bits 0-14, level0 bit 15,
+ * duration1 bits 16-30, level1 bit 31) en segments. Une duree nulle termine la trame ;
+ * mark = (level == 0) (bus bas = GPIO RX a 0). Ecrit au plus max segments, renvoie leur nombre. */
+size_t tc_proto_rmt_words_to_segments(const uint32_t *words, size_t nwords, tc_segment_t *out, size_t max);
+
 const char *tc_type_name(tc_type_t t);
 const char *tc_decode_error_name(tc_decode_error_t e);
 
