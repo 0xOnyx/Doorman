@@ -2,6 +2,32 @@
 
 Date : 2026-10-13. Projet : interphone Koch TC:Bus → Apple HomeKit sur ESP32-C3, ESP-IDF v5.5.5, C11.
 
+## Amendement 2026-10-13 : cible ESP32-S3
+
+La carte installée est une ESP32-S3 (ESP32-S3FH4R2, révision v0.2 : 2 cœurs Xtensa, 4 Mo de flash et
+2 Mo de PSRAM quad dans le boîtier, USB-Serial-JTAG natif ; modèle exact de la carte de développement
+inconnu). Ce qui change par rapport au reste du document, qui reste valable pour tout le reste :
+
+- **Cible** : `CONFIG_IDF_TARGET="esp32s3"`, `idf.py set-target esp32s3`. Flash 4 Mo et partitions
+  inchangées. PSRAM non activée en phase 0 (`CONFIG_SPIRAM=y` en mode quad possible en phase 3).
+- **Broches** : GPIO4 (RX) et GPIO10 (TX) inchangés. Interdits pour le bus : GPIO0, 3, 45, 46
+  (strapping), GPIO19/20 (USB-Serial-JTAG), GPIO43/44 (UART0), GPIO26 à 32 (flash et PSRAM du
+  boîtier) ; GPIO22 à 25 n'existent pas. GPIO33 à 37 restent libres (pris seulement en mode octal).
+  Kconfig `TC_BUS_*_GPIO` : plage 0..48. Bouton BOOT : GPIO0 (et non GPIO9).
+- **Console** : `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` (console principale sur l'USB natif, plus
+  d'UART0 ni de console secondaire) : le bootloader (sélection de partition, rollback) et
+  l'application s'affichent dans `idf.py monitor` sur `/dev/ttyACM0`. Sans hôte USB, la sortie est
+  jetée sans bloquer (`usb_serial_jtag_is_connected()`).
+- **Signature** : RSA-3072 sans Secure Boot matériel toujours disponible
+  (`SOC_SECURE_BOOT_V2_RSA`, aucune contrainte de révision sur S3) ; la remarque sur
+  `ESP32C3_REV_MIN` ne s'applique plus.
+- **RMT** : 4 canaux RX de 48 mots (canaux 4 à 7 du groupe, 0 à 3 côté RX), DMA disponible mais
+  inutile ; `RMT_CLK_SRC_DEFAULT` = APB 80 MHz, filtre compté à 80 MHz (≤ 255 ticks, ~3,2 µs) :
+  `signal_range_min_ns = 2500` et `signal_range_max_ns = 7 000 000` (7000 ≤ 32767) restent valides.
+  Le pilote active toujours le pull-up à la création du canal : il est toujours coupé ensuite.
+- **Double cœur** : les sections critiques de `netlog` (`portMUX_TYPE`) protègent déjà entre cœurs ;
+  les autres états partagés n'ont qu'un écrivain (drapeaux `bool`, compteurs 32 bits de `tc_bus`).
+
 Ce document est le design validé de la **phase 0** uniquement. Il s'appuie sur le cahier des charges
 fourni par l'utilisateur (« Interphone Koch TC:Bus → HomeKit », ci-après « le CdC ») et sur des faits
 vérifiés dans les sources d'ESP-IDF v5.5.5, d'esp-homekit-sdk (commit `676fabac`) et des projets de

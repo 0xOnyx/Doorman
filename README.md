@@ -1,6 +1,6 @@
 # Interphone Koch TC:Bus → HomeKit
 
-Firmware ESP-IDF pour ESP32-C3 qui écoute le bus TC:Bus d'un interphone Koch (sonnerie, ouverture de porte, éclairage) et l'exposera dans HomeKit. La carte est installée une fois, puis tout se fait à distance : logs par TCP, mises à jour OTA signées, rollback automatique.
+Firmware ESP-IDF pour ESP32-S3 (ESP32-S3FH4R2 : 2 cœurs, 4 Mo de flash, 2 Mo de PSRAM) qui écoute le bus TC:Bus d'un interphone Koch (sonnerie, ouverture de porte, éclairage) et l'exposera dans HomeKit. La carte est installée une fois, puis tout se fait à distance : logs par TCP, mises à jour OTA signées, rollback automatique.
 
 Guide d'utilisation complet : `docs/utilisation.md`
 
@@ -37,7 +37,7 @@ Si ESP-IDF n'est pas installé (nouvelle machine, Ubuntu) :
 
 ```bash
 sudo apt install git wget flex bison gperf python3 python3-venv cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
-mkdir -p ~/esp && cd ~/esp && git clone -b v5.5.5 --recursive https://github.com/espressif/esp-idf.git && cd esp-idf && ./install.sh esp32c3
+mkdir -p ~/esp && cd ~/esp && git clone -b v5.5.5 --recursive https://github.com/espressif/esp-idf.git && cd esp-idf && ./install.sh esp32s3
 ```
 
 ## Compiler le firmware
@@ -49,9 +49,9 @@ mkdir -p ~/esp && cd ~/esp && git clone -b v5.5.5 --recursive https://github.com
    ```
 2. **Première fois seulement sur une machine** :
    ```bash
-   idf.py set-target esp32c3
+   idf.py set-target esp32s3
    ```
-   Cette commande crée `sdkconfig` à partir de `sdkconfig.defaults`. Elle **remet `sdkconfig` à zéro** : ne plus jamais la relancer une fois les secrets saisis (sinon il faut tout ressaisir).
+   Cette commande crée `sdkconfig` à partir de `sdkconfig.defaults`. Elle **remet `sdkconfig` à zéro** : ne plus jamais la relancer une fois les secrets saisis (sinon il faut tout ressaisir). Un `sdkconfig` créé pour l'ancienne cible ESP32-C3 se refait ainsi : sauvegarder d'abord ses lignes `CONFIG_APP_` et `CONFIG_TC_BUS_` (`mkdir -p build-check && grep -E '^CONFIG_(APP_|TC_BUS_)' sdkconfig > build-check/mes-secrets.defaults`, `build-check/` est ignoré par git), puis `idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;build-check/mes-secrets.defaults" set-target esp32s3`.
 
    La clé de signature doit exister dans `keys/signing_key.pem` : la générer une seule fois (étape 5 de « Flasher la carte ») ou recopier la clé sauvegardée.
 3. Configurer :
@@ -97,7 +97,7 @@ mkdir -p ~/esp && cd ~/esp && git clone -b v5.5.5 --recursive https://github.com
 
 Ce flash USB n'a lieu **qu'une fois**. Ensuite, toutes les mises à jour passent par le réseau (OTA).
 
-1. **Matériel** : la carte Seeit ESP32-DEV-16P (ESP32-C3), **débranchée de la plaque d'interface** (il n'y a pas de diode entre l'USB et le Traco : ne jamais brancher l'USB quand la carte est sur la plaque alimentée). Un câble USB-C **data** (un câble de charge seule ne fait pas apparaître de port série).
+1. **Matériel** : une carte de développement ESP32-S3 (puce ESP32-S3FH4R2 ; modèle exact de la carte à vérifier : quelles broches sont sorties, GPIO4 et GPIO10 compris, et où est le bouton BOOT, relié à GPIO0), **débranchée de la plaque d'interface** (il n'y a pas de diode entre l'USB et le Traco : ne jamais brancher l'USB quand la carte est sur la plaque alimentée). Un câble USB-C **data** (un câble de charge seule ne fait pas apparaître de port série).
 2. **Une seule fois** : donner l'accès au port série à ton utilisateur.
    ```bash
    sudo usermod -aG dialout $USER
@@ -111,7 +111,7 @@ Ce flash USB n'a lieu **qu'une fois**. Ensuite, toutes les mises à jour passent
    ls /dev/ttyACM* /dev/ttyUSB*
    dmesg | tail
    ```
-   L'USB natif du C3 apparaît en `/dev/ttyACM0` ; une carte avec puce USB-série apparaît en `/dev/ttyUSB0`. `dmesg | tail` montre ce qui vient d'être détecté. Les commandes ci-dessous utilisent `/dev/ttyACM0` : adapter si besoin.
+   L'USB natif de l'ESP32-S3 (USB-Serial-JTAG, GPIO19/20) apparaît en `/dev/ttyACM0`. C'est aussi la console : bootloader et application y écrivent, `idf.py monitor` y voit tout ; rien n'est envoyé sur UART0 (GPIO43/44). Une carte avec un second connecteur relié à une puce USB-série apparaît en `/dev/ttyUSB0` sur ce connecteur : il permet de flasher mais n'affiche pas les logs, utiliser le connecteur USB natif. `dmesg | tail` montre ce qui vient d'être détecté. Les commandes ci-dessous utilisent `/dev/ttyACM0` : adapter si besoin.
 4. Activer ESP-IDF :
    ```bash
    . ~/esp/esp-idf/export.sh
@@ -142,7 +142,7 @@ Ce flash USB n'a lieu **qu'une fois**. Ensuite, toutes les mises à jour passent
    idf.py -p /dev/ttyACM0 erase-flash flash monitor
    ```
    `erase-flash` efface **toute** la flash (NVS, deux emplacements OTA, etc.) : à faire **une seule fois**, la première fois. Le moniteur série s'ouvre ensuite ; **Ctrl+]** pour le quitter.
-9. Si le flash ne démarre pas (`Failed to connect to ESP32-C3` / `No serial data received.`) : passer en mode téléchargement à la main. Maintenir **BOOT** (GPIO9), appuyer puis relâcher **RESET** (EN), relâcher **BOOT**, puis relancer la commande. Si ça échoue encore, essayer un débit plus bas : `idf.py -p /dev/ttyACM0 -b 115200 erase-flash flash monitor`.
+9. Si le flash ne démarre pas (`Failed to connect to ESP32-S3` / `No serial data received.`) : passer en mode téléchargement à la main. Maintenir **BOOT** (GPIO0 sur les cartes ESP32-S3), appuyer puis relâcher **RESET** (EN), relâcher **BOOT**, puis relancer la commande. Si ça échoue encore, essayer un débit plus bas : `idf.py -p /dev/ttyACM0 -b 115200 erase-flash flash monitor`.
 10. Ce qu'on doit voir dans le moniteur au démarrage (dans cet ordre, entre autres lignes) :
     ```
     interphone-homekit 0.1.0 | partition ota_0 (none) | reset ...

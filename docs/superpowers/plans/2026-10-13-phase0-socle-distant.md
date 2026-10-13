@@ -1,5 +1,9 @@
 # Phase 0 : socle distant — plan d'implémentation
 
+> **Amendement 2026-10-13 : cible ESP32-S3.** La carte installée est une ESP32-S3 (ESP32-S3FH4R2). Les
+> mentions d'ESP32-C3 ci-dessous sont historiques : cible `esp32s3`, broches interdites S3, console
+> principale USB-Serial-JTAG et bouton BOOT GPIO0. Détail dans l'amendement en tête de la spec.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produire le firmware ESP32-C3 de la phase 0 : accès distant complet (Wi-Fi, logs TCP, OTA signée, rollback, SoftAP de secours), sniffer du bus TC:Bus, et bibliothèque de protocole pure testée sur PC.
