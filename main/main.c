@@ -14,6 +14,7 @@
 #include "app_net.h"
 #include "app_ota.h"
 #include "tc_bus.h"
+#include "app_selftest.h"
 
 static const char *TAG = "main";
 
@@ -75,4 +76,5 @@ void app_main(void)
 #endif
     app_ota_start();
     tc_bus_start(NULL, NULL);
+    app_selftest_start();
 }
