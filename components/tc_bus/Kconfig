@@ -16,6 +16,7 @@ menu "Bus TC (tc_bus)"
         default 1000
     config TC_BUS_MY_SERIAL
         hex "Numero de serie de la station interieure (20 bits)"
+        range 0x0 0xFFFFF
         default 0x0
         help
             Numero de serie 20 bits (0x00000..0xFFFFF) de la station interieure de l'appartement.

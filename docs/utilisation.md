@@ -42,7 +42,7 @@ python3 tools/logs.py 192.168.1.42       # par IP
 - À la connexion, tu reçois d'abord **l'historique récent** (environ 12 Ko, donc le démarrage
   si la carte vient de redémarrer), puis le flux en direct.
 - Le script **se reconnecte tout seul** quand la carte redémarre (après une OTA par exemple).
-- Un seul client à la fois : un second reçoit `busy: un seul client a la fois`.
+- Un seul client à la fois : un second reçoit `busy: un seul client a la fois`. Un client disparu (PC en veille) libère la place en environ 25 s.
 - `[netlog: N octets perdus]` : ton terminal n'a pas suivi le rythme, des lignes ont sauté.
   Ce n'est pas une panne.
 - Sans Python : `nc interphone.local 3333`.
@@ -190,6 +190,7 @@ TC RX DOOR_CALL raw=0x0C30BA80 len=32 serial=0xC30BA addr=0 payload=0x1 chk=ok
 | Type | Signification |
 |---|---|
 | `DOOR_CALL` | Quelqu'un sonne depuis la platine de rue ; `serial` = l'appartement appelé |
+| `INTERNAL_CALL` | Appel interne entre appartements |
 | `FLOOR_CALL` | Sonnette palière (devant la porte de l'appartement) |
 | `OPEN_DOOR` | Ouverture de porte (forme courte, `raw=0x11xx`) |
 | `OPEN_DOOR_LONG` | Ouverture de porte (forme longue des Koch 60/70, avec le `serial`) |
@@ -205,7 +206,7 @@ TC RX DOOR_CALL raw=0x0C30BA80 len=32 serial=0xC30BA addr=0 payload=0x1 chk=ok
    le numéro de ta station intérieure. (Les `DOOR_CALL` avec un autre `serial` sont les voisins.)
 3. **Appuyer sur « ouvrir » sur ton écran Koch.** Noter la ligne `OPEN_DOOR` ou
    `OPEN_DOOR_LONG`, son `raw` complet et son `addr`.
-4. Envoyer ces trois valeurs : elles servent à configurer les phases 1 et 2.
+4. Régler le numéro de série comme indiqué ci-dessous, et garder le `raw` et l'`addr` de l'ouverture : ils serviront à la phase 2 (émission).
 
 ### Régler ton numéro de série
 
@@ -231,7 +232,7 @@ TC RX OPEN_DOOR raw=0x1100 len=16 serial=0x00000 addr=0 payload=0x0 chk=ok << PO
   `OPEN_DOOR_LONG`, `REQUEST_VERSION` : marqués quand leur `serial` est le tien.
 - `OPEN_DOOR` (forme courte) : il ne porte pas de numéro de série. Il n'est marqué que s'il vise
   l'adresse de ta platine **et** arrive moins de 3 minutes après un appel pour toi
-  (`DOOR_CALL` ou `INTERNAL_CALL`) ; sinon toute ouverture de l'immeuble serait marquée.
+  (`DOOR_CALL`, sonnerie depuis la platine de rue) ; sinon toute ouverture de l'immeuble serait marquée.
 
 ### L'objet `bus` de `/info`
 
@@ -259,7 +260,7 @@ en continu), le câblage ou le niveau du bus est à vérifier (tension au repos 
 - **Reconnexion Wi-Fi** : automatique, sans jamais redémarrer pour ça.
 - **Santé** : si le serveur HTTP ou le serveur de logs meurt, ou s'il n'y a plus aucun accès
   réseau (ni box ni secours) pendant 15 min, la carte redémarre d'elle-même.
-- **Bus** : la carte n'émet jamais rien en phase 0 (la sortie GPIO10 reste à 0).
+- **Bus** : la carte n'émet jamais rien en phases 0 et 1 (la sortie GPIO10 reste à 0).
 
 ---
 

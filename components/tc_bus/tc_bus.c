@@ -57,7 +57,7 @@ static void rx_task(void *arg)
     tc_segment_t segs[TC_MAX_SEGMENTS];
     int64_t last_err_log_us = -ERR_LOG_PERIOD_US;
     uint32_t err_masked = 0;               /* erreurs non loggees depuis la derniere ligne */
-    int64_t last_call_for_me_us = 0;       /* dernier DOOR_CALL / INTERNAL_CALL pour moi, 0 si aucun */
+    int64_t last_call_for_me_us = 0;       /* dernier DOOR_CALL (platine de rue) pour moi, 0 si aucun */
     for (;;) {
         if (xQueueReceive(s_queue, &nsym, portMAX_DELAY) != pdTRUE) {
             continue;
@@ -100,7 +100,7 @@ static void rx_task(void *arg)
             tc_proto_classify(&t);
             bool recent = last_call_for_me_us != 0 && now - last_call_for_me_us < CALL_FOR_ME_WINDOW_US;
             bool for_me = tc_proto_is_for_me(&t, CONFIG_TC_BUS_MY_SERIAL, CONFIG_TC_BUS_DOOR_ADDRESS, recent);
-            if (for_me && (t.type == TC_TYPE_DOOR_CALL || t.type == TC_TYPE_INTERNAL_CALL)) {
+            if (for_me && t.type == TC_TYPE_DOOR_CALL) {   /* un appel interne ne concerne pas la porte de rue */
                 last_call_for_me_us = now;
             }
             taskENTER_CRITICAL(&s_stats_lock);
