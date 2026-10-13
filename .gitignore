@@ -1,0 +1,12 @@
+build/
+build-*/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+keys/*.pem
+test/host/*.exe
+test/host/test_tc_proto
+test/host/test_logbuf
+test/host/test_ota_auth
+.idea/
