@@ -20,6 +20,9 @@ static void test_refus(void)
     CHECK(!ota_auth_check(NULL, TOK));
     CHECK(!ota_auth_check("Bearer " TOK, NULL));
     CHECK(!ota_auth_check("Bearer ", ""));                                   /* token vide refuse */
+    CHECK(!ota_auth_check("Bearer X123456789abcdef0123456789abcdef", TOK));  /* premier char faux */
+    CHECK(!ota_auth_check("Bearer " TOK " ", TOK));                          /* espace final */
+    CHECK(!ota_auth_check("Bearer" TOK, TOK));                               /* pas d'espace */
 }
 
 static void test_size(void)
@@ -28,6 +31,7 @@ static void test_size(void)
     CHECK(!ota_size_ok(1638401, 1638400));
     CHECK(ota_size_ok(1638400, 1638400));
     CHECK(ota_size_ok(1, 1638400));
+    CHECK(!ota_size_ok(1, 0));
 }
 
 int main(void)
