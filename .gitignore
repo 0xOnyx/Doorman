@@ -13,3 +13,4 @@ test/host/test_ota_auth
 log/
 cmake-build-*/
 __pycache__/
+.claude/
