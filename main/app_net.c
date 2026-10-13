@@ -29,10 +29,32 @@ static bool s_ap_enabled;
 static void start_recovery_ap(void) { }
 static void stop_recovery_ap(void) { }
 
+/* Programme le prochain essai de connexion avec le delai courant, puis double le delai (max 60 s). */
+static void schedule_reconnect(void)
+{
+    esp_timer_stop(s_reconnect_timer);
+    esp_timer_start_once(s_reconnect_timer, (uint64_t)s_backoff_s * 1000000ULL);
+    s_backoff_s = (s_backoff_s * 2 > BACKOFF_MAX_S) ? BACKOFF_MAX_S : s_backoff_s * 2;
+}
+
+/* Un echec synchrone de esp_wifi_connect (scan en cours, etc.) ne produit pas d'evenement
+ * DISCONNECTED : il faut reprogrammer l'essai nous-memes, sinon la station reste muette. */
+static void try_connect(void)
+{
+    if (s_connected) {
+        return;
+    }
+    esp_err_t e = esp_wifi_connect();
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_connect: %s, nouvel essai dans %d s", esp_err_to_name(e), s_backoff_s);
+        schedule_reconnect();
+    }
+}
+
 static void reconnect_cb(void *arg)
 {
     (void)arg;
-    esp_wifi_connect();
+    try_connect();
 }
 
 static void recovery_cb(void *arg)
@@ -58,7 +80,7 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
     (void)arg; (void)base;
     switch (id) {
     case WIFI_EVENT_STA_START:
-        esp_wifi_connect();
+        try_connect();
         break;
     case WIFI_EVENT_STA_DISCONNECTED: {
         const wifi_event_sta_disconnected_t *d = data;
@@ -68,9 +90,7 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (was_connected) {
             arm_recovery_timer();
         }
-        esp_timer_stop(s_reconnect_timer);
-        esp_timer_start_once(s_reconnect_timer, (uint64_t)s_backoff_s * 1000000ULL);
-        s_backoff_s = (s_backoff_s * 2 > BACKOFF_MAX_S) ? BACKOFF_MAX_S : s_backoff_s * 2;
+        schedule_reconnect();
         break;
     }
     case WIFI_EVENT_AP_STACONNECTED:
@@ -86,7 +106,16 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    (void)arg; (void)base; (void)id;
+    (void)arg; (void)base;
+    if (id == IP_EVENT_STA_LOST_IP) {
+        /* bail DHCP perdu alors qu'on est toujours associe : on n'est plus joignable */
+        ESP_LOGW(TAG, "adresse IP perdue");
+        if (s_connected) {
+            s_connected = false;
+            arm_recovery_timer();
+        }
+        return;
+    }
     const ip_event_got_ip_t *e = data;
     s_connected = true;
     s_backoff_s = 1;
@@ -111,12 +140,13 @@ void app_net_start(void)
     LOG_IF_ERR(esp_event_loop_create_default());
     s_sta_netif = esp_netif_create_default_wifi_sta();
     s_ap_netif = esp_netif_create_default_wifi_ap();
-    esp_netif_set_hostname(s_sta_netif, CONFIG_APP_HOSTNAME);
+    LOG_IF_ERR(esp_netif_set_hostname(s_sta_netif, CONFIG_APP_HOSTNAME));   /* 32 caracteres max */
 
     wifi_init_config_t icfg = WIFI_INIT_CONFIG_DEFAULT();
     LOG_IF_ERR(esp_wifi_init(&icfg));
     LOG_IF_ERR(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi, NULL, NULL));
     LOG_IF_ERR(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip, NULL, NULL));
+    LOG_IF_ERR(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_LOST_IP, on_ip, NULL, NULL));
 
     const esp_timer_create_args_t rc = { .callback = reconnect_cb, .name = "reconnect" };
     const esp_timer_create_args_t rv = { .callback = recovery_cb, .name = "recovery" };
@@ -125,10 +155,10 @@ void app_net_start(void)
 
     wifi_config_t wc;
     memset(&wc, 0, sizeof wc);
-    strlcpy((char *)wc.sta.ssid, CONFIG_APP_WIFI_SSID, sizeof wc.sta.ssid);
-    strlcpy((char *)wc.sta.password, CONFIG_APP_WIFI_PASSWORD, sizeof wc.sta.password);
+    /* strncpy volontaire : le pilote accepte un SSID de 32 octets et une PSK de 64 octets sans NUL final */
+    strncpy((char *)wc.sta.ssid, CONFIG_APP_WIFI_SSID, sizeof wc.sta.ssid);
+    strncpy((char *)wc.sta.password, CONFIG_APP_WIFI_PASSWORD, sizeof wc.sta.password);
     wc.sta.threshold.authmode = strlen(CONFIG_APP_WIFI_PASSWORD) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-    wc.sta.pmf_cfg.capable = true;
 
     LOG_IF_ERR(esp_wifi_set_storage(WIFI_STORAGE_RAM));     /* toujours les identifiants du Kconfig */
     LOG_IF_ERR(esp_wifi_set_mode(WIFI_MODE_STA));

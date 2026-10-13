@@ -16,6 +16,8 @@ const char *app_status_reset_reason_name(esp_reset_reason_t r)
     case ESP_RST_EFUSE:     return "efuse";
     case ESP_RST_PWR_GLITCH: return "pwr_glitch";
     case ESP_RST_CPU_LOCKUP: return "cpu_lockup";
+    case ESP_RST_EXT:       return "ext";
+    case ESP_RST_SDIO:      return "sdio";
     default:                return "unknown";
     }
 }
