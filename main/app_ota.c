@@ -69,6 +69,13 @@ static void token_warn_cb(void *arg)
     ESP_LOGE(TAG, "APP_OTA_TOKEN trop court (< %d caracteres) : OTA et /info refuses", TOKEN_MIN_LEN);
 }
 
+/* Corps de /info. Pire cas 753 octets (version 31, idf compte 32, labels 16, etats "pending_verify",
+ * entiers 64 bits au minimum, compteurs 32 bits a 4294967295, rssi INT_MIN, type
+ * "END_OF_DOOR_READINESS") : marge pour un idf plus long ; tout depassement est detecte (500). Statique : un seul handler
+ * httpd a la fois (tache unique), pas de place prise sur la pile. */
+#define INFO_BODY_LEN 1024
+static char s_info_body[INFO_BODY_LEN];
+
 static esp_err_t info_get(httpd_req_t *req)
 {
     if (!check_auth(req)) {
@@ -79,24 +86,65 @@ static esp_err_t info_get(httpd_req_t *req)
     const esp_partition_t *other = esp_ota_get_next_update_partition(NULL);
     tc_bus_stats_t bs;
     tc_bus_get_stats(&bs);
+    int64_t now = esp_timer_get_time();
 
-    char body[512];
-    int n = snprintf(body, sizeof body,
+    char *body = s_info_body;
+    const int cap = INFO_BODY_LEN;
+    int n = snprintf(body, cap,
         "{\"version\":\"%s\",\"idf\":\"%s\",\"partition\":\"%s\",\"ota_state\":\"%s\","
         "\"other_partition\":\"%s\",\"other_state\":\"%s\",\"uptime_s\":%lld,"
         "\"heap_free\":%" PRIu32 ",\"heap_min\":%" PRIu32 ",\"rssi\":%d,\"reset_reason\":\"%s\","
-        "\"net\":\"%s\",\"bus_frames_ok\":%" PRIu32 ",\"bus_frames_err\":%" PRIu32 "}\n",
+        "\"net\":\"%s\",\"bus_frames_ok\":%" PRIu32 ",\"bus_frames_err\":%" PRIu32 ",",
         app->version, esp_get_idf_version(),
         run ? run->label : "?", app_status_partition_state(run),
         other ? other->label : "?", app_status_partition_state(other),
-        (long long)(esp_timer_get_time() / 1000000),
+        (long long)(now / 1000000),
         esp_get_free_heap_size(), esp_get_minimum_free_heap_size(),
         app_net_rssi(), app_status_reset_reason_name(esp_reset_reason()),
         app_net_recovery_ap_active() ? "recovery" : "sta",
         bs.frames_ok, bs.frames_err);
-    if (n < 0 || n >= (int)sizeof body) {
+    if (n < 0 || n >= cap) {
         return reply_close(req, "500 Internal Server Error", "info too long\n");
     }
+    int m = snprintf(body + n, cap - n,
+        "\"bus\":{\"ok\":%" PRIu32 ",\"err\":%" PRIu32 ",\"for_me\":%" PRIu32 ",\"my_serial\":",
+        bs.frames_ok, bs.frames_err, bs.for_me);
+    if (m < 0 || m >= cap - n) {
+        return reply_close(req, "500 Internal Server Error", "info too long\n");
+    }
+    n += m;
+#if CONFIG_TC_BUS_MY_SERIAL != 0
+    m = snprintf(body + n, cap - n, "\"0x%05lX\",", (unsigned long)CONFIG_TC_BUS_MY_SERIAL);
+#else
+    m = snprintf(body + n, cap - n, "\"unset\",");
+#endif
+    if (m < 0 || m >= cap - n) {
+        return reply_close(req, "500 Internal Server Error", "info too long\n");
+    }
+    n += m;
+    m = snprintf(body + n, cap - n,
+        "\"door_call\":%" PRIu32 ",\"internal_call\":%" PRIu32 ",\"floor_call\":%" PRIu32 ","
+        "\"open_door\":%" PRIu32 ",\"open_door_long\":%" PRIu32 ",\"light\":%" PRIu32 ","
+        "\"unknown\":%" PRIu32 ",",
+        bs.by_type[TC_TYPE_DOOR_CALL], bs.by_type[TC_TYPE_INTERNAL_CALL], bs.by_type[TC_TYPE_FLOOR_CALL],
+        bs.by_type[TC_TYPE_OPEN_DOOR], bs.by_type[TC_TYPE_OPEN_DOOR_LONG], bs.by_type[TC_TYPE_LIGHT],
+        bs.by_type[TC_TYPE_UNKNOWN]);
+    if (m < 0 || m >= cap - n) {
+        return reply_close(req, "500 Internal Server Error", "info too long\n");
+    }
+    n += m;
+    if (bs.last_ok_us != 0) {
+        m = snprintf(body + n, cap - n,
+            "\"last_raw\":\"0x%0*lX\",\"last_type\":\"%s\",\"last_age_s\":%lld}}\n",
+            bs.last_is_long ? 8 : 4, (unsigned long)bs.last_raw, tc_type_name(bs.last_type),
+            (long long)((now - bs.last_ok_us) / 1000000));
+    } else {
+        m = snprintf(body + n, cap - n, "\"last_raw\":null,\"last_type\":null,\"last_age_s\":null}}\n");
+    }
+    if (m < 0 || m >= cap - n) {
+        return reply_close(req, "500 Internal Server Error", "info too long\n");
+    }
+    n += m;
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, body, n);
     return ESP_OK;
