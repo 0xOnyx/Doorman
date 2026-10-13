@@ -1,0 +1,71 @@
+menu "Interphone"
+
+    menu "Wi-Fi"
+        config APP_WIFI_SSID
+            string "SSID (2.4 GHz)"
+            default ""
+        config APP_WIFI_PASSWORD
+            string "Mot de passe Wi-Fi"
+            default ""
+        config APP_HOSTNAME
+            string "Nom d'hote mDNS (<nom>.local)"
+            default "interphone"
+        config APP_WIFI_TX_POWER
+            int "Puissance d'emission max (unites de 0.25 dBm, 52 = 13 dBm)"
+            range 8 84
+            default 52
+        config APP_RECOVERY_AP_PASSWORD
+            string "Mot de passe du SoftAP de secours (>= 8 caracteres, vide = desactive)"
+            default ""
+        config APP_RECOVERY_AP_DELAY_S
+            int "Delai sans connexion avant SoftAP de secours (s)"
+            range 30 86400
+            default 600
+    endmenu
+
+    menu "Logs reseau"
+        config APP_NETLOG_ENABLE
+            bool "Serveur de logs TCP"
+            default y
+        config APP_NETLOG_PORT
+            int "Port TCP des logs"
+            depends on APP_NETLOG_ENABLE
+            default 3333
+        config APP_NETLOG_BUFFER_KB
+            int "Tampon circulaire (Ko)"
+            depends on APP_NETLOG_ENABLE
+            range 4 32
+            default 12
+    endmenu
+
+    menu "OTA et auto-test"
+        config APP_HTTP_PORT
+            int "Port du serveur HTTP (OTA, info)"
+            default 8080
+        config APP_OTA_TOKEN
+            string "Token OTA (>= 32 caracteres, openssl rand -hex 24)"
+            default ""
+        config APP_SELFTEST_TIMEOUT_S
+            int "Delai max de l'auto-test (s)"
+            range 10 3600
+            default 90
+        config APP_SELFTEST_FORCE_FAIL
+            bool "TEST UNIQUEMENT : forcer l'echec de l'auto-test"
+            default n
+        config APP_BENCH_TEST
+            bool "TEST SUR L'ETABLI UNIQUEMENT : autorise auto-test >= delai du SoftAP"
+            default n
+            help
+                Leve le garde-fou de compilation qui exige un auto-test plus court que le
+                delai du SoftAP de secours. Sert uniquement a tester le SoftAP sur l'etabli
+                avec des delais courts (ex. 60 s / 180 s). Ne JAMAIS activer dans une image
+                qui sera installee : une image sans Wi-Fi fonctionnel serait validee par le
+                SoftAP et l'acces distant ne reviendrait qu'en passant par lui.
+    endmenu
+
+    config APP_HEARTBEAT_S
+        int "Periode du battement de coeur dans les logs (s, 0 = desactive)"
+        range 0 3600
+        default 300
+
+endmenu

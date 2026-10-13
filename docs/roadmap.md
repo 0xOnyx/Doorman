@@ -1,6 +1,6 @@
 # Feuille de route
 
-Interphone Koch TC:Bus → Apple HomeKit, ESP32-C3, ESP-IDF v5.5.5, C11.
+Interphone Koch TC:Bus → Apple HomeKit, ESP32-S3 (ESP32-S3FH4R2 : 2 cœurs, 4 Mo de flash, 2 Mo de PSRAM), ESP-IDF v5.5.5, C11.
 
 Une phase = un design (`docs/superpowers/specs/`), un plan, une implémentation, une validation sur
 le matériel réel par l'utilisateur. On ne commence pas la phase suivante sans cette validation.
@@ -13,7 +13,7 @@ par les logs réseau (`tools/logs.py`).
 | **1. Sniffer** | Options `TC_BUS_MY_SERIAL` et `TC_BUS_DOOR_ADDRESS`, marquage « pour moi » dans les logs, compteurs par type dans `/info`. Relevé des valeurs réelles. | Carte installée, logs réseau fonctionnels. | En sonnant depuis la platine et en ouvrant depuis l'écran Koch, les télégrammes apparaissent avec parité valide. **Numéro de série et télégramme d'ouverture exact relevés** (court `0x1100` ou long Koch 60/70). |
 | **2. Émission** | RMT TX sur GPIO10, file bornée, garde-fous (liste blanche, 200 ms, bus au repos, limiteur 5/min, écho ignoré, blocage pendant OTA), endpoint temporaire `POST /bus/open-door` (token, aucun paramètre). | Télégramme d'ouverture exact de la phase 1. Validation explicite de l'utilisateur avant d'activer `TC_BUS_TX_ENABLE`. | La porte s'ouvre depuis `curl`. L'écho est ignoré. Un type hors liste blanche est refusé (test PC). |
 | **3. HomeKit** | esp-homekit-sdk en sous-module figé, accessoire catégorie serrure avec services Doorbell (« 121 », créé à la main) et Lock Mechanism, appairage par setup code Kconfig, notification à la sonnerie, ouverture depuis Maison avec re-verrouillage après 5 s, auto-test étendu (HomeKit démarré), nom mDNS remis après `hap_start`. | Phase 2 validée. Budget flash vérifié (`idf.py size`, limite 1600 Ko). | Ajout dans l'app Maison ; notification à la sonnerie ; ouverture fonctionnelle ; OTA toujours OK ; appairage conservé après OTA. |
-| **4. Durcissement** | Bouton GPIO9 (reset appairages à 10 s), watchdog de tâches, chiffrement NVS, retrait de `/bus/open-door`, revue mémoire et logs, README final. | Phase 3 validée. | 24 h sans reboot ; redémarrage propre après coupure de courant ; OTA OK. |
+| **4. Durcissement** | Bouton BOOT GPIO0 (reset appairages à 10 s), watchdog de tâches, chiffrement NVS, retrait de `/bus/open-door`, revue mémoire et logs, README final. | Phase 3 validée. | 24 h sans reboot ; redémarrage propre après coupure de courant ; OTA OK. |
 
 ## Règles qui traversent toutes les phases
 
@@ -33,7 +33,7 @@ par les logs réseau (`tools/logs.py`).
 | Clé de signature | Phase 0 | `keys/signing_key.pem`, sauvegardée hors du PC |
 | Numéro de série, télégramme d'ouverture, adresse de porte | Phase 1 (sniffer) | `menuconfig`, puis OTA |
 | Setup code et setup ID HomeKit | Phase 3 | `menuconfig` |
-| Broche du bouton BOOT (GPIO9 probable) | Phase 4 | fiche de la carte |
+| Bouton BOOT (GPIO0 sur ESP32-S3) et broches sorties de la carte | Phase 4 | fiche de la carte |
 
 ## Références
 

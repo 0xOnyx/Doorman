@@ -1,0 +1,42 @@
+CONFIG_IDF_TARGET="esp32s3"
+# ESP32-S3FH4R2 : 4 Mo de flash et 2 Mo de PSRAM quad dans le boitier. La PSRAM reste coupee en
+# phase 0 ; CONFIG_SPIRAM=y (mode quad) pourra etre active en phase 3 pour HomeKit.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# Images signees sans Secure Boot materiel (spec 5.2). Aucun eFuse n'est touche.
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
+CONFIG_SECURE_BOOT_SIGNING_KEY="keys/signing_key.pem"
+CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
+
+# Rollback automatique (pas d'anti-rollback : il ecrit des eFuses)
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Console principale sur l'USB natif (USB-Serial-JTAG, GPIO19/20, /dev/ttyACM0) : le bootloader et
+# l'application y ecrivent, `idf.py monitor` voit tout. Sans hote USB, la sortie est jetee sans bloquer.
+# UART0 (GPIO43/44) ne recoit plus rien.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Logs sans codes couleur (lisibles tels quels sur le port 3333)
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=n
+
+# Reseau
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_SO_REUSE=y
+CONFIG_MBEDTLS_HARDWARE_MPI=y
+
+# Les gestionnaires d'evenements Wi-Fi/IP loggent via le hook netlog (+~300 o de pile)
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3072
+
+# Watchdog de taches (initialise au demarrage par defaut, CONFIG_ESP_TASK_WDT_INIT=y) : une tache
+# bloquee redemarre la carte ; une image en attente est alors annulee par le bootloader.
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# SO_LINGER : une reponse de refus (401, 413...) envoyee avant la lecture du corps arrive au client
+CONFIG_LWIP_SO_LINGER=y

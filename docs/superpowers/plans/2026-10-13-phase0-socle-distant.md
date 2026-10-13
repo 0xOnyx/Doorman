@@ -1,5 +1,9 @@
 # Phase 0 : socle distant — plan d'implémentation
 
+> **Amendement 2026-10-13 : cible ESP32-S3.** La carte installée est une ESP32-S3 (ESP32-S3FH4R2). Les
+> mentions d'ESP32-C3 ci-dessous sont historiques : cible `esp32s3`, broches interdites S3, console
+> principale USB-Serial-JTAG et bouton BOOT GPIO0. Détail dans l'amendement en tête de la spec.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produire le firmware ESP32-C3 de la phase 0 : accès distant complet (Wi-Fi, logs TCP, OTA signée, rollback, SoftAP de secours), sniffer du bus TC:Bus, et bibliothèque de protocole pure testée sur PC.
@@ -432,7 +436,7 @@ static int t_checks = 0;
 
 `test/host/Makefile` :
 ```make
-CC ?= gcc
+CC := gcc
 CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 \
           -I../../components/tc_bus/include -I../../components/netlog/include -I../../main
 
@@ -446,13 +450,13 @@ TESTS := test_ota_auth$(EXE) test_logbuf$(EXE) test_tc_proto$(EXE)
 
 all: $(TESTS)
 
-test_ota_auth$(EXE): test_ota_auth.c ../../main/ota_auth.c t.h
+test_ota_auth$(EXE): test_ota_auth.c ../../main/ota_auth.c ../../main/ota_auth.h t.h
 	$(CC) $(CFLAGS) -o $@ test_ota_auth.c ../../main/ota_auth.c
 
-test_logbuf$(EXE): test_logbuf.c ../../components/netlog/logbuf.c t.h
+test_logbuf$(EXE): test_logbuf.c ../../components/netlog/logbuf.c ../../components/netlog/include/logbuf.h t.h
 	$(CC) $(CFLAGS) -o $@ test_logbuf.c ../../components/netlog/logbuf.c
 
-test_tc_proto$(EXE): test_tc_proto.c ../../components/tc_bus/tc_proto.c t.h
+test_tc_proto$(EXE): test_tc_proto.c ../../components/tc_bus/tc_proto.c ../../components/tc_bus/include/tc_proto.h t.h
 	$(CC) $(CFLAGS) -o $@ test_tc_proto.c ../../components/tc_bus/tc_proto.c
 
 test: $(TESTS)
@@ -1274,6 +1278,7 @@ static void test_decode_rejects(void)
     tc_segment_t s[TC_MAX_SEGMENTS];
     tc_telegram_t t;
     tc_decode_error_t e;
+    memset(&t, 0, sizeof t);
     size_t n = enc(0x1100, false, false, s);
 
     tc_segment_t m[TC_MAX_SEGMENTS];
@@ -1307,16 +1312,18 @@ static void test_merge_glitches(void)
     tc_telegram_t t;
     tc_decode_error_t e;
 
-    /* parasite au milieu du segment 5 (2000 space) : 900 space, 300 mark, 800 space */
+    /* parasite au milieu du segment 5 (bit 12 = 1, 4000 space) : 1800 space, 300 mark, 1900 space.
+       Les deux morceaux restent >= 1000 : seul le 300 est un parasite. */
     tc_segment_t m[TC_MAX_SEGMENTS];
+    memset(&t, 0, sizeof t);
     memcpy(m, s, 5 * sizeof m[0]);
-    m[5] = (tc_segment_t){ 900, false };
+    m[5] = (tc_segment_t){ 1800, false };
     m[6] = (tc_segment_t){ 300, true };
-    m[7] = (tc_segment_t){ 800, false };
+    m[7] = (tc_segment_t){ 1900, false };
     memcpy(&m[8], &s[6], (n - 6) * sizeof m[0]);
     size_t k = tc_proto_merge_glitches(m, n + 2, 1000);
     CHECK_EQ(k, 19);
-    CHECK_EQ(m[5].duration_us, 2000);
+    CHECK_EQ(m[5].duration_us, 4000);
     CHECK(dec(m, k, &t, &e));
     CHECK_EQ(t.raw, 0x1100);
 
@@ -1887,9 +1894,9 @@ bool netlog_server_is_listening(void);
 
 static const char *TAG = "netlog";
 
-#define LINE_MAX   256
-#define CHUNK_MAX  512
-#define POLL_MS    50
+#define NETLOG_LINE_MAX   256     /* pas LINE_MAX : deja defini par newlib */
+#define CHUNK_MAX         512
+#define POLL_MS           50
 
 static logbuf_t s_lb;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -1900,7 +1907,7 @@ static int s_port;
 /* Hook esp_log : console d'origine + tampon circulaire. Ne bloque jamais. */
 static int netlog_vprintf(const char *fmt, va_list ap)
 {
-    char line[LINE_MAX];
+    char line[NETLOG_LINE_MAX];
     va_list ap2;
     va_copy(ap2, ap);
     int n = vsnprintf(line, sizeof line, fmt, ap2);
@@ -2068,17 +2075,8 @@ Dans `main/main.c` : ajouter `#include "netlog.h"` et, dans `app_main`, juste ap
     }
 #endif
 ```
-Et à la fin de `app_main` (le serveur est démarré après le réseau à la tâche 8, mais il peut
-l'être dès maintenant, le socket s'ouvre sur `0.0.0.0` sans attendre le Wi-Fi) :
-```c
-#if CONFIG_APP_NETLOG_ENABLE
-    netlog_server_start(CONFIG_APP_NETLOG_PORT);
-#endif
-```
-
-Attention : sans pile TCP/IP initialisée (`esp_netif_init`), `socket()` échoue. Comme `app_net`
-n'existe qu'à la tâche 8, le serveur loggera `socket: errno ...` au boot sur cette version
-intermédiaire. C'est attendu ; la tâche 8 place `netlog_server_start` après `app_net_start`.
+Ne pas appeler `netlog_server_start` dans cette tâche : sans pile TCP/IP initialisée
+(`esp_netif_init`, tâche 8), `socket()` ne doit pas être appelé. La tâche 8 l'ajoute après `app_net_start`.
 
 - [ ] **Step 4 : build**
 
@@ -2396,7 +2394,6 @@ de démarrage et la fin de `app_main` par :
     netlog_server_start(CONFIG_APP_NETLOG_PORT);
 #endif
 ```
-(et supprimer l'appel à `netlog_server_start` placé à la tâche 7, s'il est à un autre endroit).
 
 - [ ] **Step 5 : build**
 
@@ -2696,6 +2693,7 @@ static esp_err_t ota_finish(httpd_req_t *req, const char *status, const char *ms
     httpd_resp_set_status(req, status);
     httpd_resp_set_type(req, reboot ? "application/json" : "text/plain");
     httpd_resp_sendstr(req, msg);
+    ESP_LOGI(TAG, "pile httpd libre min : %u octets", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     if (reboot) {
         ESP_LOGI(TAG, "OTA OK, redemarrage dans 1 s");
         esp_timer_start_once(s_reboot_timer, 1000000);
@@ -2738,23 +2736,19 @@ static esp_err_t ota_post(httpd_req_t *req)
     }
 
     size_t remaining = req->content_len;
-    int timeouts = 0;
     bool first = true;
     while (remaining > 0) {
         size_t want = remaining < OTA_CHUNK ? remaining : OTA_CHUNK;
         int r = httpd_req_recv(req, (char *)s_buf, want);
         if (r == HTTPD_SOCK_ERR_TIMEOUT) {
-            if (++timeouts > 5) {
-                esp_ota_abort(h);
-                return ota_finish(req, "500 Internal Server Error", "receive timeout\n", false);
-            }
-            continue;
+            /* 10 s sans un octet : on abandonne, sinon un client bloque monopolise le serveur */
+            esp_ota_abort(h);
+            return ota_finish(req, "500 Internal Server Error", "receive timeout\n", false);
         }
         if (r <= 0) {
             esp_ota_abort(h);
             return ota_finish(req, "500 Internal Server Error", "receive error\n", false);
         }
-        timeouts = 0;
         e = esp_ota_write(h, s_buf, (size_t)r);
         if (e != ESP_OK) {
             esp_ota_abort(h);
@@ -3090,8 +3084,8 @@ static void rx_task(void *arg)
             continue;                       /* evenement vide ou parasite isole */
         }
         s_stats.last_rx_us = esp_timer_get_time();
-        k = tc_proto_strip_trailing_idle(segs, k);
-        k = tc_proto_merge_glitches(segs, k, CONFIG_TC_BUS_GLITCH_US);
+        k = tc_proto_merge_glitches(segs, k, CONFIG_TC_BUS_GLITCH_US);   /* d'abord : un parasite dans le repos */
+        k = tc_proto_strip_trailing_idle(segs, k);                        /* ensuite : retirer le repos */
 
         tc_telegram_t t;
         tc_decode_error_t err;
@@ -3469,24 +3463,33 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 Cette tâche n'écrit pas de code. Elle déroule la spec §13.3. Chaque étape est faite par
 l'utilisateur sur la carte **débranchée de la plaque d'interface**, alimentée par l'USB.
 Prérequis : `menuconfig` renseigné (SSID, mot de passe, token ≥ 32, mot de passe SoftAP ≥ 8),
-clé sauvegardée.
+clé sauvegardée. Sans ces secrets, la compilation échoue volontairement (`app_config_check.c`).
+
+Dans chaque terminal :
+```bash
+. ~/esp/esp-idf/export.sh
+cd ~/CLionProjects/Doorman
+export OTA_TOKEN=$(sed -n 's/^CONFIG_APP_OTA_TOKEN="\(.*\)"$/\1/p' sdkconfig)
+```
 
 - [ ] **Étape 1 : premier flash et logs**
 
-```powershell
-idf.py build flash monitor
+```bash
+idf.py build
+idf.py -p /dev/ttyACM0 erase-flash flash monitor
 ```
-Attendu sur la console : `interphone-homekit 0.1.0 | partition ota_0 (valid) | reset poweron`,
-`station demarree`, `connecte, IP ...`, `serveur de logs sur le port 3333`,
+Attendu sur la console : `interphone-homekit 0.1.0 | partition ota_0 (none) | reset poweron`
+(`none` : pas encore d'entrée otadata après un flash USB), le tableau `gpio_dump` (GPIO4 entrée
+sans pull, GPIO10 sortie à 0), `station demarree`, `connecte, IP ...`, `serveur de logs sur le port 3333`,
 `serveur HTTP sur le port 8080`, `reception RMT sur GPIO4`, `image deja validee, pas d'auto-test`.
 
-Depuis le PC (Git Bash) :
+Depuis le PC :
 ```bash
-python tools/logs.py                                   # historique puis flux
-curl -H "Authorization: Bearer $TOKEN" http://interphone.local:8080/info
-curl http://interphone.local:8080/info                 # attendu : 401
+python3 tools/logs.py                                   # historique puis flux
+curl -H "Authorization: Bearer $OTA_TOKEN" http://interphone.local:8080/info
+curl http://interphone.local:8080/info                  # attendu : 401
 ```
-Si `interphone.local` ne résout pas sous Windows, utiliser l'IP affichée dans les logs.
+Si `interphone.local` ne résout pas, utiliser l'IP affichée dans les logs.
 
 - [ ] **Étape 2 : OTA valide**
 
@@ -3497,21 +3500,22 @@ Si `interphone.local` ne résout pas sous Windows, utiliser l'IP affichée dans 
 
 - [ ] **Étape 3 : image non signée ou altérée refusée**
 
-Image altérée (signature corrompue) :
+Image altérée (un octet du corps de l'image modifié ; modifier un des derniers octets ne prouverait
+rien : ils tombent dans le bourrage du secteur de signature, qui n'est pas vérifié) :
 ```bash
-python - <<'EOF'
+python3 - <<'EOF'
 d = bytearray(open("build/interphone-homekit.bin", "rb").read())
-d[-100] ^= 0xFF
+d[0x2000] ^= 0xFF
 open("build/tampered.bin", "wb").write(d)
 EOF
-curl -i -X POST -H "Authorization: Bearer $TOKEN" -H "Expect:" --data-binary @build/tampered.bin http://interphone.local:8080/ota
+curl -i -X POST -H "Authorization: Bearer $OTA_TOKEN" -H "Expect:" --data-binary @build/tampered.bin http://interphone.local:8080/ota
 ```
 Attendu : `400 Bad Request`, `image invalid or unsigned`, logs `OTA echouee`, carte toujours en 0.1.1.
 
 Image sans bloc de signature (les 4 derniers Ko retirés) :
 ```bash
 head -c -4096 build/interphone-homekit.bin > build/unsigned.bin
-curl -i -X POST -H "Authorization: Bearer $TOKEN" -H "Expect:" --data-binary @build/unsigned.bin http://interphone.local:8080/ota
+curl -i -X POST -H "Authorization: Bearer $OTA_TOKEN" -H "Expect:" --data-binary @build/unsigned.bin http://interphone.local:8080/ota
 ```
 Attendu : `400 Bad Request`.
 
@@ -3525,23 +3529,47 @@ reboot, puis `interphone-homekit 0.1.1 | partition ota_1 (valid)`. `/info` : `"v
 
 - [ ] **Étape 5 : SoftAP de secours**
 
-`menuconfig` : mot de passe Wi-Fi volontairement faux, délai SoftAP `60`, délai auto-test `180`.
-`version.txt` → `0.1.3`, `tools/ota.sh`. Attendu : la carte redémarre, ne se connecte pas, le log
-série montre `invariant non respecte` (attendu pour ce test) puis, après 60 s,
-`SoftAP de secours 'interphone-recovery' demarre`, puis `SELFTEST OK`. Connecter le PC au réseau
-`interphone-recovery`, puis :
+`menuconfig` : mot de passe Wi-Fi volontairement faux, délai SoftAP `60`, délai auto-test `180`,
+et activer **APP_BENCH_TEST** (OTA et auto-test) : sans lui, la compilation refuse un auto-test plus
+long que le délai du SoftAP. `version.txt` → `0.1.3`, `tools/ota.sh`. Attendu : la carte redémarre,
+ne se connecte pas, le log série montre `image de test APP_BENCH_TEST` (attendu pour ce test) puis,
+après 60 s, `SoftAP de secours 'interphone-recovery' demarre`, puis `SELFTEST OK`. Connecter le PC
+au réseau `interphone-recovery`, puis :
 ```bash
-curl -H "Authorization: Bearer $TOKEN" http://192.168.4.1:8080/info      # "net":"recovery"
+curl -H "Authorization: Bearer $OTA_TOKEN" http://192.168.4.1:8080/info      # "net":"recovery"
 ```
-Remettre le bon mot de passe et les délais par défaut (600 / 90), `version.txt` → `0.1.4`,
-`tools/ota.sh 192.168.4.1`. Attendu : OTA acceptée, reboot, connexion à la box, `SELFTEST OK`,
-`SoftAP de secours arrete`. Une pause de 1 à 2 s du flux pendant les tentatives de reconnexion
-de la station est normale.
+Remettre le bon mot de passe, les délais par défaut (600 / 90) et **désactiver APP_BENCH_TEST**
+(une image installée ne doit jamais l'avoir), `version.txt` → `0.1.4`, `tools/ota.sh 192.168.4.1`.
+Attendu : OTA acceptée, reboot, connexion à la box, `SELFTEST OK`, `SoftAP de secours arrete`.
+Une pause de 1 à 2 s du flux pendant les tentatives de reconnexion de la station est normale.
 
 - [ ] **Étape 6 : clôture**
 
 Commit du résultat (valeurs de `/info`, taille, remarques) dans `docs/phase0-validation.md`,
 puis installation de la carte près de l'interphone. La phase 1 commence par son propre design.
+
+- [ ] **Étape 6 bis : vérifications complémentaires**
+
+À consigner aussi dans `docs/phase0-validation.md` :
+
+- GPIO10 jamais à l'état haut depuis la mise sous tension, pendant le boot, une OTA et un
+  redémarrage sur panic : oscilloscope ou analyseur logique si disponible ; au minimum multimètre
+  et sortie `gpio_dump` du boot (GPIO4 entrée sans pull, GPIO10 sortie à 0).
+- Une fois câblé, environ 2,9 V au repos sur GPIO4.
+- Image qui plante en boucle (`abort()` 5 s après le boot) envoyée par OTA : retour à la version
+  précédente, `/info` montre `other_state` `aborted`.
+- Coupure d'alimentation pendant l'auto-test d'une nouvelle image : rollback au redémarrage.
+- Ctrl-C sur `curl` en plein envoi : l'OTA suivante fonctionne normalement.
+- Vrai test du SoftAP à 600 s, box éteinte : OTA complète via `192.168.4.1`, chronométrée.
+- Marges de pile (`HB pile libre`) après une OTA et après démarrage/arrêt du SoftAP : au moins 512 o
+  pour chaque tâche.
+- Tas (`heap`, `min_heap`) après le boot, après une OTA, après le SoftAP.
+- Rechercher dans une capture complète de `logs.py` le token et les deux mots de passe
+  (`grep -F "$OTA_TOKEN" capture.log`, idem pour les mots de passe) : aucune occurrence.
+- Client de logs fantôme (portable mis en veille avec `logs.py` ouvert) : mesurer le temps avant
+  qu'un nouveau client soit accepté.
+- À l'installation, raccordement passif au bus : surveiller le rythme de `bus_err` dans les
+  battements de cœur et vérifier que `/info` et l'OTA restent réactifs.
 
 ---
 

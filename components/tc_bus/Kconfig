@@ -1,0 +1,17 @@
+menu "Bus TC (tc_bus)"
+    config TC_BUS_RX_GPIO
+        int "GPIO de reception (diviseur)"
+        range 0 48
+        default 4
+    config TC_BUS_TX_GPIO
+        int "GPIO d'emission (base du transistor)"
+        range 0 48
+        default 10
+    config TC_BUS_TX_ENABLE
+        bool "Compiler l'emission (DOIT rester desactive en phase 0)"
+        default n
+    config TC_BUS_GLITCH_US
+        int "Segments plus courts que ceci sont des parasites (us)"
+        range 100 2000
+        default 1000
+endmenu
