@@ -104,6 +104,39 @@ static void test_lost_pointer_optional(void)
     CHECK(memcmp(out, "cdef", 4) == 0);
 }
 
+static void test_cursor_ahead_and_zero_write(void)
+{
+    uint8_t st[8];
+    logbuf_t lb;
+    logbuf_init(&lb, st, sizeof st);
+    logbuf_write(&lb, "abc", 3);
+    logbuf_write(&lb, "", 0);
+    CHECK_EQ(logbuf_total(&lb), 3);
+    CHECK_EQ(lb.len, 3);
+    CHECK_EQ(lb.head, 3);
+    char out[8];
+    uint64_t cur = 10, lost = 7;
+    CHECK_EQ(logbuf_read(&lb, &cur, out, sizeof out, &lost), 0);
+    CHECK_EQ(lost, 0);
+    CHECK_EQ(cur, 3);
+}
+
+static void test_stale_cursor_midstream(void)
+{
+    uint8_t st[8];
+    logbuf_t lb;
+    logbuf_init(&lb, st, sizeof st);
+    logbuf_write(&lb, "abcdefgh", 8);
+    char out[8];
+    uint64_t cur = 0, lost = 0;
+    CHECK_EQ(logbuf_read(&lb, &cur, out, 3, &lost), 3);     /* cur = 3 */
+    logbuf_write(&lb, "ijklmnop", 8);                        /* total 16, fenetre = 8..15 */
+    CHECK_EQ(logbuf_read(&lb, &cur, out, 8, &lost), 8);
+    CHECK_EQ(lost, 5);                                       /* 3..7 perdus */
+    CHECK(memcmp(out, "ijklmnop", 8) == 0);
+    CHECK_EQ(cur, 16);
+}
+
 int main(void)
 {
     RUN(test_write_read);
@@ -112,5 +145,7 @@ int main(void)
     RUN(test_block_larger_than_cap);
     RUN(test_incremental_reads);
     RUN(test_lost_pointer_optional);
+    RUN(test_cursor_ahead_and_zero_write);
+    RUN(test_stale_cursor_midstream);
     T_END();
 }
