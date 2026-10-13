@@ -10,6 +10,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "netlog.h"
+#include "app_status.h"
+#include "app_net.h"
 
 static const char *TAG = "main";
 
@@ -61,7 +63,12 @@ void app_main(void)
     nvs_init();
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
-    ESP_LOGI(TAG, "interphone-homekit %s sur %s, reset=%d, heap=%" PRIu32,
-             app->version, run ? run->label : "?", (int)esp_reset_reason(),
-             esp_get_free_heap_size());
+    ESP_LOGI(TAG, "interphone-homekit %s | partition %s (%s) | reset %s | heap %" PRIu32,
+             app->version, run ? run->label : "?", app_status_partition_state(run),
+             app_status_reset_reason_name(esp_reset_reason()), esp_get_free_heap_size());
+
+    app_net_start();
+#if CONFIG_APP_NETLOG_ENABLE
+    netlog_server_start(CONFIG_APP_NETLOG_PORT);
+#endif
 }
