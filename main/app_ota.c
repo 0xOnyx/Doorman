@@ -126,7 +126,12 @@ static esp_err_t ota_finish(httpd_req_t *req, const char *status, const char *ms
     ESP_LOGI(TAG, "pile httpd libre min : %u octets", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     if (reboot) {
         ESP_LOGI(TAG, "OTA OK, redemarrage dans 1 s");
-        esp_timer_start_once(s_reboot_timer, 1000000);
+        if (esp_timer_start_once(s_reboot_timer, 1000000) != ESP_OK) {
+            /* sans timer, on ne doit pas rester bloque en "OTA en cours" : reboot immediat */
+            ESP_LOGE(TAG, "timer de reboot indisponible, redemarrage immediat");
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        }
         return ESP_OK;
     }
     ESP_LOGW(TAG, "OTA echouee: %s", msg);
