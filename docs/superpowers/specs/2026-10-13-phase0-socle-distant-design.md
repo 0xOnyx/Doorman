@@ -31,13 +31,14 @@ Critères de réussite (CdC §10, phase 0), vérifiés sur l'établi avant insta
 2. Une OTA signée valide est appliquée et la nouvelle version démarre.
 3. Une OTA non signée est refusée (400), la carte continue sur l'image en place.
 4. Une image qui échoue son auto-test revient seule à la version précédente.
-5. Avec un mauvais mot de passe Wi-Fi, le SoftAP de secours apparaît et accepte une OTA.
+5. Avec un mauvais mot de passe Wi-Fi, le SoftAP de secours apparaît et accepte une OTA
+   (avec les délais de test de §13.3 ; avec les délais de production, le rollback agit avant).
 
 ## 2. Décisions d'architecture
 
 | Décision | Choix | Raison |
 |---|---|---|
-| Serveur HTTP pour l'OTA | **Serveur dédié, permanent, port 8080** (option 1, validée par l'utilisateur) | Le socle distant ne dépend jamais de HomeKit. Le code de phase 0 ne sera plus modifié. Coût : une tâche httpd (~6 Ko de pile). |
+| Serveur HTTP pour l'OTA | **Serveur dédié, permanent, port 8080** (option 1, validée par l'utilisateur) | Le socle distant ne dépend jamais de HomeKit. Le code de phase 0 ne sera plus modifié. Coût : une tâche httpd (8 Ko de pile). |
 | Logs réseau | TCP brut sur 3333, lecture seule, un client | Simple, lisible avec `nc` ou un script Python de 10 lignes. |
 | Langage | C11, ESP-IDF v5.5.5, pas de C++ | CdC. Tout l'écosystème (IDF, SDK HomeKit) est en C. |
 | Licence du projet | MIT, implémentation originale | Doorman et peteh sont GPL-3.0, atc1441 sans licence. Aucun code n'est copié ; ils servent de référence technique et sont crédités dans le README. |
@@ -239,11 +240,16 @@ int    app_net_rssi(void);                /* 0 si non connecté */
   (`app_ota_in_progress()`), l'arrêt du SoftAP est différé jusqu'à sa fin pour ne pas couper le transfert.
 - mDNS : `mdns_init`, `mdns_hostname_set(APP_HOSTNAME)`, `mdns_instance_name_set`. Composant
   `espressif/mdns` du Component Manager (déclaré dans `main/idf_component.yml`).
-- Minuterie de secours : démarrée au boot et à chaque déconnexion, `APP_RECOVERY_AP_DELAY_S`.
+- Minuterie de secours (`APP_RECOVERY_AP_DELAY_S`, one-shot) : armée au boot, et armée de nouveau
+  quand une connexion **établie** est perdue, **uniquement si elle ne tourne pas déjà**. Les échecs
+  de connexion successifs (`STA_DISCONNECTED` répétés pendant le backoff) **ne la réarment jamais** :
+  sinon elle ne pourrait pas expirer. Elle est annulée sur `GOT_IP`.
   Si elle expire alors que la station n'a pas d'IP : passage en `WIFI_MODE_APSTA`, SoftAP
   `interphone-recovery`, WPA2-PSK, canal 1, 2 clients max, IP `192.168.4.1`. Les tentatives
   de reconnexion de la station continuent pendant ce temps.
 - Sur le SoftAP, seuls le port 3333 et le port 8080 répondent (rien d'autre n'écoute).
+- Tant que le SoftAP est actif (y compris pendant un arrêt différé), `app_net_recovery_ap_active()`
+  est vrai et `/info` indique `net = recovery`.
 
 ## 8. Composant `netlog`
 
@@ -305,13 +311,17 @@ signature RSA dans cette tâche), 4 sockets max, `lru_purge_enable`.
 Codes : 401 token absent ou faux ; 503 token mal configuré (< 32 caractères) ; 404 autre route.
 `app_ota_is_running()` pour l'auto-test, `app_ota_in_progress()` pour `app_net`.
 
+Valeurs de `ota_state` et `other_state` : `new`, `pending_verify`, `valid`, `invalid`, `aborted`,
+`undefined`, et `none` si `esp_ota_get_state_partition` renvoie `ESP_ERR_NOT_FOUND` (slot jamais
+écrit, cas du premier flash). `other_state` est lu dans le handler à chaque requête, pas mis en cache.
+
 ### 9.3 `POST /ota`
 
 1. Token (401), puis vérification qu'aucune OTA n'est en cours (drapeau atomique, sinon 409).
 2. `Content-Length` obligatoire et `ota_size_ok` contre la taille de `esp_ota_get_next_update_partition(NULL)`, sinon 413.
 3. `tc_bus_tx_block()` (no-op en phase 0, mais l'appel est en place).
 4. `esp_ota_begin(part, content_length, &h)`. `ESP_ERR_OTA_ROLLBACK_INVALID_STATE` (image actuelle
-   encore en auto-test) → 409 « self-test pending ».
+   encore en auto-test) → 409 « self-test pending », bus débloqué. Toute autre erreur → 500, bus débloqué.
 5. Boucle `httpd_req_recv` par blocs de 4 Ko → `esp_ota_write`. Timeout socket 10 s. Toute erreur →
    `esp_ota_abort`, bus débloqué, 500 (réseau) ou 400 (premier bloc sans magic).
 6. `esp_ota_end` : `ESP_ERR_OTA_VALIDATE_FAILED` → 400 « image invalid or unsigned », partition de
@@ -333,9 +343,11 @@ Le téléchargement est le pic de consommation : la puissance Wi-Fi reste à 52 
   - `tc_bus_is_running()`.
   `APP_SELFTEST_FORCE_FAIL` force l'échec.
 - Succès → `esp_ota_mark_app_valid_cancel_rollback()`, log `SELFTEST OK, image validée`.
-- Échec → log `SELFTEST FAILED (raison)`, `esp_ota_mark_app_invalid_rollback_and_reboot()`.
-  Le bootloader redémarre l'image précédente et marque celle-ci `ESP_OTA_IMG_INVALID`.
-  Si cet appel échoue (aucune autre image valide), on logge et on continue sans valider.
+- Échec → log `SELFTEST FAILED (raison)`, `esp_ota_mark_app_invalid_rollback_and_reboot()` :
+  l'image courante est marquée `ESP_OTA_IMG_INVALID` et le bootloader redémarre l'autre.
+  Si cet appel échoue (aucune autre image valide), on logge, puis on **valide** quand même l'image
+  (`esp_ota_mark_app_valid_cancel_rollback`) pour que l'OTA reste disponible : une image en attente
+  refuserait toute OTA (409) jusqu'au prochain reboot.
 - Premier flash USB : avec `otadata` vierge, le bootloader marque lui-même `ota_0` valide, l'image
   n'est jamais en attente et l'auto-test est sauté. C'est attendu.
 - **Invariant de production** : `APP_SELFTEST_TIMEOUT_S` (90) doit rester inférieur à
@@ -532,7 +544,7 @@ sans `Bearer `, `NULL` refusés ; `ota_size_ok(0)`, `ota_size_ok(part+1)` faux, 
 | 2 | `version.txt` → 0.1.1, `tools/ota.sh` | 200, reboot, `SELFTEST OK`, `/info` affiche 0.1.1 |
 | 3 | Build dans `build-unsigned/` avec `CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=n`, POST | 400 `image invalid or unsigned`, carte toujours en 0.1.1 |
 | 4 | Build 0.1.2 avec `APP_SELFTEST_FORCE_FAIL=y`, POST | Reboot, `SELFTEST FAILED`, second reboot, `/info` affiche `version` 0.1.1 et `other_state` = `invalid` |
-| 5 | Build 0.1.3 avec mauvais mot de passe Wi-Fi, `APP_RECOVERY_AP_DELAY_S=60` et `APP_SELFTEST_TIMEOUT_S=180`, POST | Après 60 s, SSID `interphone-recovery` visible ; l'auto-test passe grâce au SoftAP (`SELFTEST OK`) ; `/info` sur `192.168.4.1:8080` ; POST d'une 0.1.4 corrigée → retour sur la box |
+| 5 | Build 0.1.3 avec mauvais mot de passe Wi-Fi, `APP_RECOVERY_AP_PASSWORD` renseigné (≥ 8 caractères), `APP_RECOVERY_AP_DELAY_S=60` et `APP_SELFTEST_TIMEOUT_S=180`, POST | L'avertissement d'invariant de §10 apparaît au boot ; après 60 s, SSID `interphone-recovery` visible ; l'auto-test passe grâce au SoftAP (`SELFTEST OK`) ; `/info` sur `192.168.4.1:8080` ; POST d'une 0.1.4 corrigée → retour sur la box |
 
 Note sur le cas 5 : avec les délais par défaut (auto-test 90 s, SoftAP 600 s), une image sans Wi-Fi
 est annulée par le rollback **avant** l'apparition du SoftAP. C'est le comportement voulu en production :
