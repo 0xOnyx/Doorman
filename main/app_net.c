@@ -26,37 +26,81 @@ static volatile bool s_ap_active;
 static volatile bool s_ap_stop_deferred;
 static bool s_ap_enabled;
 
-/* --- SoftAP de secours : complete a la tache 11 --- */
+/* --- SoftAP de secours --- */
 #define RECOVERY_AP_SSID "interphone-recovery"
+
+static void schedule_reconnect(void);
+static wifi_config_t s_ap_cfg;               /* statique : partage entre boot et tache esp_timer */
+
+/* Mot de passe WPA2 accepte par le pilote : 8 a 63 caracteres, ou exactement 64 chiffres hexa. */
+static bool ap_password_valid(const char *pw)
+{
+    size_t n = strlen(pw);
+    if (n >= 8 && n <= 63) {
+        return true;
+    }
+    if (n != 64) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char c = pw[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void build_ap_config(void)
+{
+    memset(&s_ap_cfg, 0, sizeof s_ap_cfg);
+    strlcpy((char *)s_ap_cfg.ap.ssid, RECOVERY_AP_SSID, sizeof s_ap_cfg.ap.ssid);
+    s_ap_cfg.ap.ssid_len = strlen(RECOVERY_AP_SSID);
+    strncpy((char *)s_ap_cfg.ap.password, CONFIG_APP_RECOVERY_AP_PASSWORD, sizeof s_ap_cfg.ap.password);
+    s_ap_cfg.ap.channel = 1;
+    s_ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    s_ap_cfg.ap.max_connection = 2;
+    s_ap_cfg.ap.pmf_cfg.required = false;
+}
+
+static void stop_recovery_ap(void);
 
 static void start_recovery_ap(void)
 {
-    static wifi_config_t ap;                 /* statique : on est dans la tache esp_timer */
-    memset(&ap, 0, sizeof ap);
-    strlcpy((char *)ap.ap.ssid, RECOVERY_AP_SSID, sizeof ap.ap.ssid);
-    ap.ap.ssid_len = strlen(RECOVERY_AP_SSID);
-    strncpy((char *)ap.ap.password, CONFIG_APP_RECOVERY_AP_PASSWORD, sizeof ap.ap.password);
-    ap.ap.channel = 1;
-    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    ap.ap.max_connection = 2;
-    ap.ap.pmf_cfg.required = false;
-
-    LOG_IF_ERR(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    LOG_IF_ERR(esp_wifi_set_config(WIFI_IF_AP, &ap));
+    /* la config AP est deja chargee au boot : le passage en APSTA ne montre jamais l'AP ouvert par defaut */
+    esp_err_t e = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (e == ESP_OK) {
+        e = esp_wifi_set_config(WIFI_IF_AP, &s_ap_cfg);
+    }
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "SoftAP de secours impossible : %s", esp_err_to_name(e));
+        esp_wifi_set_mode(WIFI_MODE_STA);    /* jamais d'AP mal configure */
+        return;
+    }
     s_ap_active = true;
     s_ap_stop_deferred = false;
     ESP_LOGW(TAG, "SoftAP de secours '%s' demarre (192.168.4.1), la station continue d'essayer",
              RECOVERY_AP_SSID);
+    /* le changement de mode peut interrompre un essai en cours sans evenement : on en reprogramme un */
+    schedule_reconnect();
+    /* GOT_IP a pu arriver pendant le demarrage (autre tache) : ne pas laisser l'AP sans raison */
+    if (s_connected) {
+        stop_recovery_ap();
+    }
 }
 
 static void stop_recovery_ap(void)
 {
+    s_ap_stop_deferred = true;               /* pose d'abord : ota_finished le verra quoi qu'il arrive */
     if (app_ota_in_progress()) {
-        s_ap_stop_deferred = true;
         ESP_LOGI(TAG, "OTA en cours : arret du SoftAP differe");
         return;
     }
-    LOG_IF_ERR(esp_wifi_set_mode(WIFI_MODE_STA));
+    esp_err_t e = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "arret du SoftAP : %s", esp_err_to_name(e));
+        return;                              /* etat conserve : l'AP tourne toujours */
+    }
     s_ap_active = false;
     s_ap_stop_deferred = false;
     ESP_LOGI(TAG, "SoftAP de secours arrete");
@@ -161,9 +205,9 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 void app_net_start(void)
 {
-    s_ap_enabled = strlen(CONFIG_APP_RECOVERY_AP_PASSWORD) >= 8;
+    s_ap_enabled = ap_password_valid(CONFIG_APP_RECOVERY_AP_PASSWORD);
     if (!s_ap_enabled) {
-        ESP_LOGE(TAG, "APP_RECOVERY_AP_PASSWORD trop court (< 8) : SoftAP de secours DESACTIVE");
+        ESP_LOGE(TAG, "APP_RECOVERY_AP_PASSWORD invalide (8 a 63 caracteres, ou 64 hexa) : SoftAP de secours DESACTIVE");
     }
     if (strlen(CONFIG_APP_WIFI_SSID) == 0) {
         ESP_LOGE(TAG, "APP_WIFI_SSID vide : aucune connexion possible");
@@ -194,6 +238,12 @@ void app_net_start(void)
     wc.sta.threshold.authmode = strlen(CONFIG_APP_WIFI_PASSWORD) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
     LOG_IF_ERR(esp_wifi_set_storage(WIFI_STORAGE_RAM));     /* toujours les identifiants du Kconfig */
+    if (s_ap_enabled) {
+        /* precharger la config AP avant le demarrage : le mode APSTA ulterieur l'utilise directement */
+        build_ap_config();
+        LOG_IF_ERR(esp_wifi_set_mode(WIFI_MODE_APSTA));
+        LOG_IF_ERR(esp_wifi_set_config(WIFI_IF_AP, &s_ap_cfg));
+    }
     LOG_IF_ERR(esp_wifi_set_mode(WIFI_MODE_STA));
     LOG_IF_ERR(esp_wifi_set_config(WIFI_IF_STA, &wc));
     LOG_IF_ERR(esp_wifi_start());
@@ -232,7 +282,7 @@ int app_net_rssi(void)
 
 void app_net_ota_finished(void)
 {
-    if (s_ap_stop_deferred && s_connected) {
+    if (s_ap_active && s_connected) {
         stop_recovery_ap();
     }
 }
