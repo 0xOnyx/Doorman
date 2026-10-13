@@ -71,6 +71,27 @@ static void set_nonblock(int fd)
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
+/* Keepalive TCP cote carte : un client disparu sans FIN (Wi-Fi coupe, PC en veille) est detecte
+ * en ~25 s (10 s d'inactivite + 3 sondes a 5 s) ; recv() echoue alors et la place se libere.
+ * LWIP_TCP_KEEPALIVE vaut 1 dans le lwipopts.h d'ESP-IDF (pas d'option Kconfig). */
+#if !LWIP_TCP_KEEPALIVE
+#error "LWIP_TCP_KEEPALIVE requis pour TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT"
+#endif
+#define KEEPALIVE_IDLE_S  10
+#define KEEPALIVE_INTVL_S 5
+#define KEEPALIVE_CNT     3
+
+static void set_keepalive(int fd)
+{
+    int yes = 1, idle = KEEPALIVE_IDLE_S, intvl = KEEPALIVE_INTVL_S, cnt = KEEPALIVE_CNT;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof yes) < 0 ||
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof idle) < 0 ||
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof intvl) < 0 ||
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof cnt) < 0) {
+        ESP_LOGW(TAG, "keepalive TCP: errno %d", errno);
+    }
+}
+
 /* Refuse poliment un second client pendant qu'un premier est servi. */
 static void reject_pending(int lfd)
 {
@@ -171,6 +192,7 @@ static void netlog_task(void *arg)
             continue;
         }
         ESP_LOGI(TAG, "client connecte");
+        set_keepalive(c);
         serve_client(lfd, c);
         close(c);
         ESP_LOGI(TAG, "client deconnecte");

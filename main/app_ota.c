@@ -158,9 +158,13 @@ static esp_err_t reboot_post(httpd_req_t *req)
     ESP_LOGW(TAG, "redemarrage demande par /reboot");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"status\":\"rebooting\",\"reboot_in_ms\":1000}\n");
-    esp_err_t e = esp_timer_start_once(s_reboot_timer, 1000000);
-    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "reboot non programme: %s", esp_err_to_name(e));
+    /* ESP_ERR_INVALID_STATE avec un timer existant : reboot deja programme (second /reboot) */
+    esp_err_t e = (s_reboot_timer != NULL) ? esp_timer_start_once(s_reboot_timer, 1000000) : ESP_ERR_INVALID_ARG;
+    if (e != ESP_OK && !(e == ESP_ERR_INVALID_STATE && s_reboot_timer != NULL)) {
+        /* meme repli que ota_finish : ne pas annoncer un reboot qui n'arrive pas */
+        ESP_LOGE(TAG, "timer de reboot indisponible (%s), redemarrage immediat", esp_err_to_name(e));
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
     }
     return ESP_OK;
 }
