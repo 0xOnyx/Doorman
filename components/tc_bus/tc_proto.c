@@ -238,6 +238,163 @@ done:
     return true;
 }
 
-/* --- classification et liste blanche : tache 6 (stubs provisoires) --- */
-void tc_proto_classify(tc_telegram_t *t) { (void)t; }
-bool tc_proto_tx_allowed(const tc_telegram_t *t) { (void)t; return false; }
+/* --- classification et liste blanche --- */
+void tc_proto_classify(tc_telegram_t *t)
+{
+    uint32_t raw = t->raw;
+    t->type = TC_TYPE_UNKNOWN;
+    t->serial = 0;
+    t->address = 0;
+    t->payload = raw;
+
+    if (t->is_response && !t->is_long && raw <= 0xF) {
+        t->type = TC_TYPE_ACK;
+        return;
+    }
+
+    if (t->is_long) {
+        uint8_t hi = (uint8_t)((raw >> 28) & 0xF);
+        uint8_t top = (uint8_t)((raw >> 24) & 0xFF);
+        uint8_t low = (uint8_t)(raw & 0xFF);
+
+        if (top == 0x82) {
+            t->type = TC_TYPE_WRITE_MEMORY;
+            t->payload = raw & 0xFFFFFF;
+            return;
+        }
+        if (top == 0x81 || top == 0x89) {
+            t->type = TC_TYPE_SELECT_MEMORY_PAGE;
+            t->serial = raw & 0xFFFFF;
+            t->payload = (raw >> 20) & 0xF;
+            return;
+        }
+        uint32_t serial = (raw >> 8) & 0xFFFFF;
+        uint8_t address = (uint8_t)(raw & 0x3F);
+        switch (hi) {
+        case 0x0:
+            t->type = (raw & 0x40u) ? TC_TYPE_INTERNAL_CALL : TC_TYPE_DOOR_CALL;
+            t->serial = serial;
+            t->address = address;
+            t->payload = (raw >> 7) & 1;
+            return;
+        case 0x1:
+            if (low == 0x41) {
+                t->type = TC_TYPE_FLOOR_CALL;
+                t->serial = serial;
+                t->payload = 0;
+                return;
+            }
+            if (raw & 0x80) {
+                t->type = TC_TYPE_OPEN_DOOR_LONG;
+                t->serial = serial;
+                t->address = address;
+                t->payload = (raw >> 6) & 1;
+                return;
+            }
+            break;
+        case 0x3:
+            t->type = TC_TYPE_START_TALKING;
+            t->serial = serial;
+            t->address = address;
+            t->payload = (raw >> 6) & 0x3;
+            return;
+        case 0x5:
+            if (low == 0xC0) {
+                t->type = TC_TYPE_REQUEST_VERSION;
+                t->serial = serial;
+                t->payload = 0;
+                return;
+            }
+            break;
+        case 0x6:
+            t->type = TC_TYPE_CONTROL_FUNCTION;
+            t->serial = serial;
+            t->payload = low;
+            return;
+        default:
+            break;
+        }
+        return;   /* UNKNOWN, payload = raw */
+    }
+
+    /* trame courte (16 bits) */
+    uint8_t hi8 = (uint8_t)((raw >> 8) & 0xFF);
+    switch (hi8) {
+    case 0x11:
+        t->type = TC_TYPE_OPEN_DOOR;
+        t->address = (uint8_t)(raw & 0x3F);
+        t->payload = (raw >> 7) & 1;
+        return;
+    case 0x12:
+        t->type = TC_TYPE_LIGHT;
+        t->payload = 0;
+        return;
+    case 0x21:
+        t->type = (raw & 0x80) ? TC_TYPE_DOOR_CLOSED : TC_TYPE_DOOR_OPENED;
+        t->address = (uint8_t)(raw & 0x3F);
+        t->payload = 0;
+        return;
+    case 0x22:
+        t->type = TC_TYPE_END_OF_RINGTONE;
+        t->address = (uint8_t)(raw & 0x3F);
+        t->payload = 0;
+        return;
+    case 0x24:
+        t->type = TC_TYPE_END_OF_DOOR_READINESS;
+        t->address = (uint8_t)(raw & 0x3F);
+        t->payload = 0;
+        return;
+    case 0x28:
+        t->type = TC_TYPE_INIT_DOOR_STATION;
+        t->address = (uint8_t)(raw & 0x3F);
+        t->payload = 0;
+        return;
+    case 0x50:
+        t->type = TC_TYPE_PROGRAMMING_MODE;
+        t->payload = raw & 1;
+        return;
+    case 0x51:
+        t->type = TC_TYPE_RESET;
+        t->payload = 0;
+        return;
+    case 0x52:
+        t->type = TC_TYPE_SEARCH_DEVICES;
+        t->payload = 0;
+        return;
+    case 0x84:
+        t->type = TC_TYPE_READ_MEMORY_BLOCK;
+        t->payload = raw & 0xFF;
+        return;
+    default:
+        break;
+    }
+    if (((raw >> 12) & 0xF) == 0x3) {
+        t->type = TC_TYPE_STOP_TALKING;
+        t->address = (uint8_t)(raw & 0x3F);
+        t->payload = (raw >> 6) & 1;
+        return;
+    }
+    /* UNKNOWN, payload = raw */
+}
+
+bool tc_proto_tx_allowed(const tc_telegram_t *t)
+{
+    if (t == NULL || t->is_response) {
+        return false;
+    }
+    /* On ne fait pas confiance au champ type : on reclasse le raw. */
+    tc_telegram_t c = *t;
+    tc_proto_classify(&c);
+    if (c.type != t->type) {
+        return false;
+    }
+    switch (c.type) {
+    case TC_TYPE_OPEN_DOOR:
+    case TC_TYPE_LIGHT:
+        return !c.is_long;
+    case TC_TYPE_OPEN_DOOR_LONG:
+        return c.is_long;
+    default:
+        return false;
+    }
+}

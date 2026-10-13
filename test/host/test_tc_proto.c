@@ -337,6 +337,133 @@ static void test_strip_trailing_idle(void)
     CHECK_EQ(tc_proto_strip_trailing_idle(s, n + 1), 20);
 }
 
+static tc_telegram_t cls(uint32_t raw, bool is_long, bool is_response)
+{
+    tc_telegram_t t;
+    memset(&t, 0, sizeof t);
+    t.raw = raw;
+    t.is_long = is_long;
+    t.is_response = is_response;
+    tc_proto_classify(&t);
+    return t;
+}
+
+static void test_classify_long(void)
+{
+    tc_telegram_t t = cls(0x0C30BA80, true, false);
+    CHECK_EQ(t.type, TC_TYPE_DOOR_CALL); CHECK_EQ(t.serial, 0xC30BA); CHECK_EQ(t.address, 0);
+    t = cls(0x0C30BA43, true, false);
+    CHECK_EQ(t.type, TC_TYPE_INTERNAL_CALL); CHECK_EQ(t.serial, 0xC30BA); CHECK_EQ(t.address, 3);
+    t = cls(0x1C30BA41, true, false);
+    CHECK_EQ(t.type, TC_TYPE_FLOOR_CALL); CHECK_EQ(t.serial, 0xC30BA);
+    t = cls(0x1C30BA80, true, false);
+    CHECK_EQ(t.type, TC_TYPE_OPEN_DOOR_LONG); CHECK_EQ(t.serial, 0xC30BA); CHECK_EQ(t.address, 0); CHECK_EQ(t.payload, 0);
+    t = cls(0x1C30BAC2, true, false);
+    CHECK_EQ(t.type, TC_TYPE_OPEN_DOOR_LONG); CHECK_EQ(t.address, 2); CHECK_EQ(t.payload, 1);
+    t = cls(0x3C30BA80, true, false);
+    CHECK_EQ(t.type, TC_TYPE_START_TALKING); CHECK_EQ(t.serial, 0xC30BA);
+    t = cls(0x5C30BAC0, true, false);
+    CHECK_EQ(t.type, TC_TYPE_REQUEST_VERSION); CHECK_EQ(t.serial, 0xC30BA);
+    t = cls(0x6C30BA08, true, false);
+    CHECK_EQ(t.type, TC_TYPE_CONTROL_FUNCTION); CHECK_EQ(t.serial, 0xC30BA); CHECK_EQ(t.payload, 8);
+    t = cls(0x82140A0B, true, false);
+    CHECK_EQ(t.type, TC_TYPE_WRITE_MEMORY); CHECK_EQ(t.payload, 0x140A0B);
+    t = cls(0x810C30BA, true, false);
+    CHECK_EQ(t.type, TC_TYPE_SELECT_MEMORY_PAGE); CHECK_EQ(t.serial, 0xC30BA);
+    t = cls(0x890C30BA, true, false);
+    CHECK_EQ(t.type, TC_TYPE_SELECT_MEMORY_PAGE);
+    t = cls(0x9ABCDEF0, true, false);
+    CHECK_EQ(t.type, TC_TYPE_UNKNOWN); CHECK_EQ(t.serial, 0); CHECK_EQ(t.payload, 0x9ABCDEF0);
+    t = cls(0x1C30BA00, true, false);           /* type 1, ni 0x41 ni bit 7 */
+    CHECK_EQ(t.type, TC_TYPE_UNKNOWN);
+    t = cls(0x5C30BA00, true, false);           /* type 5 sans 0xC0 */
+    CHECK_EQ(t.type, TC_TYPE_UNKNOWN);
+}
+
+static void test_classify_short(void)
+{
+    tc_telegram_t t = cls(0x1100, false, false);
+    CHECK_EQ(t.type, TC_TYPE_OPEN_DOOR); CHECK_EQ(t.address, 0); CHECK_EQ(t.payload, 0);
+    t = cls(0x1181, false, false);
+    CHECK_EQ(t.type, TC_TYPE_OPEN_DOOR); CHECK_EQ(t.address, 1); CHECK_EQ(t.payload, 1);
+    t = cls(0x1200, false, false);
+    CHECK_EQ(t.type, TC_TYPE_LIGHT);
+    t = cls(0x3040, false, false);
+    CHECK_EQ(t.type, TC_TYPE_STOP_TALKING); CHECK_EQ(t.address, 0); CHECK_EQ(t.payload, 1);
+    t = cls(0x3005, false, false);
+    CHECK_EQ(t.type, TC_TYPE_STOP_TALKING); CHECK_EQ(t.address, 5); CHECK_EQ(t.payload, 0);
+    t = cls(0x2180, false, false);
+    CHECK_EQ(t.type, TC_TYPE_DOOR_CLOSED);
+    t = cls(0x2100, false, false);
+    CHECK_EQ(t.type, TC_TYPE_DOOR_OPENED);
+    CHECK_EQ(cls(0x2200, false, false).type, TC_TYPE_END_OF_RINGTONE);
+    CHECK_EQ(cls(0x2400, false, false).type, TC_TYPE_END_OF_DOOR_READINESS);
+    CHECK_EQ(cls(0x2800, false, false).type, TC_TYPE_INIT_DOOR_STATION);
+    t = cls(0x5041, false, false);
+    CHECK_EQ(t.type, TC_TYPE_PROGRAMMING_MODE); CHECK_EQ(t.payload, 1);
+    CHECK_EQ(cls(0x5100, false, false).type, TC_TYPE_RESET);
+    CHECK_EQ(cls(0x5200, false, false).type, TC_TYPE_SEARCH_DEVICES);
+    t = cls(0x840C, false, false);
+    CHECK_EQ(t.type, TC_TYPE_READ_MEMORY_BLOCK); CHECK_EQ(t.payload, 0x0C);
+    t = cls(0x7FFF, false, false);
+    CHECK_EQ(t.type, TC_TYPE_UNKNOWN); CHECK_EQ(t.payload, 0x7FFF);
+    /* ACK : seulement avec un depart reponse */
+    t = cls(0x5, false, true);
+    CHECK_EQ(t.type, TC_TYPE_ACK); CHECK_EQ(t.payload, 5);
+    t = cls(0x5, false, false);
+    CHECK_EQ(t.type, TC_TYPE_UNKNOWN);
+    t = cls(0x1100, false, true);               /* reponse > 0xF : pas un ACK */
+    CHECK_EQ(t.type, TC_TYPE_OPEN_DOOR);
+    t = cls(0x5, true, true);                   /* long : jamais un ACK */
+    CHECK_EQ(t.type, TC_TYPE_DOOR_CALL);
+}
+
+static void test_whitelist(void)
+{
+    CHECK(tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x1100, .type = TC_TYPE_OPEN_DOOR }));
+    CHECK(tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x1181, .type = TC_TYPE_OPEN_DOOR }));
+    CHECK(tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x1C30BA80, .is_long = true, .type = TC_TYPE_OPEN_DOOR_LONG }));
+    CHECK(tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x1200, .type = TC_TYPE_LIGHT }));
+
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x5041, .type = TC_TYPE_PROGRAMMING_MODE }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x82140A0B, .is_long = true, .type = TC_TYPE_WRITE_MEMORY }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x840C, .type = TC_TYPE_READ_MEMORY_BLOCK }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x810C30BA, .is_long = true, .type = TC_TYPE_SELECT_MEMORY_PAGE }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x5100, .type = TC_TYPE_RESET }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x2800, .type = TC_TYPE_INIT_DOOR_STATION }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x5200, .type = TC_TYPE_SEARCH_DEVICES }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x7FFF, .type = TC_TYPE_UNKNOWN }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x0C30BA80, .is_long = true, .type = TC_TYPE_DOOR_CALL }));
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x1, .is_response = true, .type = TC_TYPE_ACK }));
+    /* type menteur : raw dit PROGRAMMING_MODE, type dit OPEN_DOOR -> refuse */
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x5041, .type = TC_TYPE_OPEN_DOOR }));
+    /* is_long incoherent avec le type */
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x1100, .is_long = true, .type = TC_TYPE_OPEN_DOOR }));
+    /* reponse jamais emise, meme avec un raw autorise */
+    CHECK(!tc_proto_tx_allowed(&(tc_telegram_t){ .raw = 0x1100, .is_response = true, .type = TC_TYPE_OPEN_DOOR }));
+    /* NULL */
+    CHECK(!tc_proto_tx_allowed(NULL));
+    /* balayage : aucun raw court hors 0x11xx / 0x12xx n'est autorise */
+    for (uint32_t raw = 0; raw <= 0xFFFF; raw++) {
+        tc_telegram_t t = cls(raw, false, false);
+        bool allowed = tc_proto_tx_allowed(&t);
+        bool expected = (t.type == TC_TYPE_OPEN_DOOR || t.type == TC_TYPE_LIGHT);
+        if (allowed != expected) {
+            CHECK(allowed == expected);
+            break;
+        }
+    }
+    CHECK(true);
+}
+
+static void test_names(void)
+{
+    CHECK(strcmp(tc_type_name(TC_TYPE_OPEN_DOOR), "OPEN_DOOR") == 0);
+    CHECK(strcmp(tc_type_name(TC_TYPE_UNKNOWN), "UNKNOWN") == 0);
+    CHECK(strcmp(tc_type_name((tc_type_t)999), "?") == 0);
+    CHECK(strcmp(tc_decode_error_name(TC_ERR_PARITY), "parity") == 0);
+}
+
 int main(void)
 {
     RUN(test_parity);
@@ -349,5 +476,9 @@ int main(void)
     RUN(test_decode_rejects);
     RUN(test_merge_glitches);
     RUN(test_strip_trailing_idle);
+    RUN(test_classify_long);
+    RUN(test_classify_short);
+    RUN(test_whitelist);
+    RUN(test_names);
     T_END();
 }
