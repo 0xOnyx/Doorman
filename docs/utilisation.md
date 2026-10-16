@@ -61,6 +61,9 @@ Ctrl+C pour quitter.
 | `TC RX DOOR_CALL raw=0x0C30BA80 len=32 serial=0xC30BA addr=0 ...` | Télégramme lu sur le bus (voir section 7) ; ` << POUR MOI` en fin de ligne s'il concerne ton appartement |
 | `numero de serie non configure : relever un DOOR_CALL ...` | Au démarrage : `TC_BUS_MY_SERIAL` n'est pas encore réglé (section 7) |
 | `TC RX ERR parity ...` | Trame illisible (parasite, ou trame abîmée). Quelques-unes sont normales |
+| `reception ADC sur GPIO9 (ADC1 canal 8, 20000 Hz) : bas < 1700 mV ...` | Au démarrage : le récepteur lit le bus en analogique (voir section 7) |
+| `bus repos min=2930 max=2990 mV (20000 Hz)` | Toutes les 30 s quand le bus est resté au repos : tension mesurée sur la broche RX et cadence réelle de l'ADC. Rien de plus quand il y a eu du trafic (les lignes `TC RX` suffisent) |
+| `ADC : reserve pleine, N trame(s) de conversion perdue(s)` | La tâche de réception a pris du retard (OTA en cours par exemple) : un télégramme a pu être manqué. Rare et sans gravité ; fréquent = à signaler |
 | `nouvelle image en attente : auto-test (90 s max)` | Premier démarrage d'une nouvelle version |
 | `SELFTEST OK, image validee` | La nouvelle version est gardée |
 | `SELFTEST FAILED ... rollback` | La nouvelle version est rejetée, retour automatique à la précédente |
@@ -82,6 +85,7 @@ Exemple de réponse :
  "other_partition":"ota_0","other_state":"valid","uptime_s":86400,
  "heap_free":151234,"heap_min":140112,"rssi":-61,"reset_reason":"software",
  "net":"sta","bus_frames_ok":42,"bus_frames_err":3,
+ "chip_temp_c":41,"rx_gpio":9,"rx_mv":2955,
  "bus":{"ok":42,"err":3,"for_me":2,"my_serial":"0xC30BA","door_call":5,"internal_call":0,
         "floor_call":1,"open_door":2,"open_door_long":0,"light":1,"unknown":4,
         "last_raw":"0x1100","last_type":"OPEN_DOOR","last_age_s":12}}
@@ -96,6 +100,7 @@ Exemple de réponse :
 | `heap_min` | Mémoire libre minimale depuis le démarrage ; doit rester au-dessus de 50 000 |
 | `net` | `sta` (box) ou `recovery` (point d'accès de secours) |
 | `bus_frames_ok` / `bus_frames_err` | Trames lues / rejetées depuis le démarrage (repris dans `bus.ok` / `bus.err`) |
+| `rx_gpio` / `rx_mv` | Broche de réception et dernière tension mesurée dessus, en mV : ~2950 au repos. `-1` si inconnue (récepteur RMT) |
 | `bus` | Activité du bus depuis le démarrage, détaillée en section 7 |
 
 Réponses d'erreur : `401 unauthorized` (token absent ou faux), `503` (la carte a été compilée
@@ -248,7 +253,25 @@ Pour vérifier à distance qu'une sonnerie a bien été vue : `for_me` et `door_
 `last_type` vaut `DOOR_CALL` avec un `last_age_s` faible.
 
 Le compteur `bus_frames_err` qui monte un peu est normal. S'il monte vite (plusieurs par seconde
-en continu), le câblage ou le niveau du bus est à vérifier (tension au repos d'environ 2,9 V sur GPIO4).
+en continu), le câblage ou le niveau du bus est à vérifier (tension au repos d'environ 2,95 V sur
+GPIO9 : `rx_mv` de `/info` ou ligne `bus repos` des logs).
+
+### Le récepteur analogique
+
+Le bus est lu **en analogique** : l'ADC échantillonne la broche RX (GPIO9, derrière le diviseur
+1 MΩ / 147 kΩ) 20 000 fois par seconde. Sur la carte installée, la broche est à 2,94–2,98 V au
+repos et ne descend qu'à ~0,86 V pendant un télégramme : l'entrée numérique ne voit pas ces bas
+de façon fiable, d'où les seuils logiciels avec hystérésis :
+
+- le bus passe « bas » quand la broche descend sous `TC_BUS_ADC_LOW_MV` (1700 mV par défaut) ;
+- il redevient « haut » quand elle remonte à `TC_BUS_ADC_HIGH_MV` (2100 mV par défaut) ou plus.
+
+À ajuster seulement si les niveaux changent (autre câblage, autre bus) : relever le repos (ligne
+`bus repos ... max=`) et le bas d'un télégramme, puis placer les deux seuils entre les deux,
+nettement à l'écart de chacun (`idf.py menuconfig` → **« Bus TC (tc_bus) »**, puis incrémenter
+`version.txt` et livrer par OTA). Symptômes : aucun `TC RX` alors que le bus est actif (seuil bas
+trop bas, ou repos sous le seuil haut), ou beaucoup de `TC RX ERR` (seuils trop près du bruit).
+L'ancien récepteur numérique reste disponible (**Recepteur du bus** → RMT) pour un autre câblage.
 
 ---
 
@@ -260,7 +283,7 @@ en continu), le câblage ou le niveau du bus est à vérifier (tension au repos 
 - **Reconnexion Wi-Fi** : automatique, sans jamais redémarrer pour ça.
 - **Santé** : si le serveur HTTP ou le serveur de logs meurt, ou s'il n'y a plus aucun accès
   réseau (ni box ni secours) pendant 15 min, la carte redémarre d'elle-même.
-- **Bus** : la carte n'émet jamais rien en phases 0 et 1 (la sortie GPIO10 reste à 0).
+- **Bus** : la carte n'émet jamais rien en phases 0 et 1 (la sortie GPIO8 reste à 0).
 
 ---
 

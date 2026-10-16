@@ -151,10 +151,10 @@ Ce flash USB n'a lieu **qu'une fois**. Ensuite, toutes les mises à jour passent
     connecte, IP 192.168.x.y, rssi -NN
     serveur de logs sur le port 3333
     serveur HTTP sur le port 8080 (/info, /ota, /reboot)
-    reception RMT sur GPIO4, emission NON compilee (TX GPIO10 reste a 0)
+    reception ADC sur GPIO9 (ADC1 canal 8, 20000 Hz) : bas < 1700 mV ... ; emission NON compilee (TX GPIO8 reste a 0)
     image deja validee, pas d'auto-test
     ```
-    Après le premier flash, le bootloader marque lui-même `ota_0` comme `valid` : il n'y a pas d'auto-test. Le moniteur affiche aussi l'état de GPIO4 (entrée, `Pullup: 0, Pulldown: 0`) et de GPIO10 (sortie).
+    Après le premier flash, le bootloader marque lui-même `ota_0` comme `valid` : il n'y a pas d'auto-test. Le moniteur affiche aussi l'état de GPIO9 (réception, analogique : entrée numérique coupée, `Pullup: 0, Pulldown: 0`) et de GPIO8 (sortie).
 
     Puis tester depuis le PC :
     ```bash
@@ -191,7 +191,7 @@ curl -X POST -H "Authorization: Bearer $OTA_TOKEN" http://interphone.local:8080/
 ## Sécurité du bus
 
 - Le bus est partagé par tout l'immeuble : une émission erronée dérange les voisins.
-- GPIO10 (émission) est forcé à 0 en toute première ligne de `app_main`.
+- GPIO8 (émission, `TC_BUS_TX_GPIO`) est forcé à 0 en toute première ligne de `app_main`.
 - L'émission n'est pas compilée en phase 0.
 - Seules les commandes `OPEN_DOOR`, `OPEN_DOOR_LONG` (Koch 60/70) et `LIGHT` seront autorisées (liste blanche dans `tc_proto.c`).
 
