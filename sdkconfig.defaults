@@ -44,3 +44,7 @@ CONFIG_LWIP_SO_LINGER=y
 # Recepteur ADC : ISR en IRAM, sinon une ecriture flash (OTA, validation) bloque l'ISR plus
 # longtemps que les 25 ms de tampons DMA et le canal peut s'arreter
 CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y
+
+# Emission sur le bus (phase 2) : jamais activee par defaut. A activer dans menuconfig
+# (Bus TC > Compiler l'emission) seulement pour l'image qui doit ouvrir la porte.
+# CONFIG_TC_BUS_TX_ENABLE is not set

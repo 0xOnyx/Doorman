@@ -23,6 +23,8 @@ static const char *TAG = "tc_bus";
 static rmt_channel_handle_t s_rx;
 static QueueHandle_t s_queue;
 static rmt_symbol_word_t s_symbols[RX_SYMBOLS];
+static portMUX_TYPE s_time_lock = portMUX_INITIALIZER_UNLOCKED;
+static int64_t s_last_edge_us;           /* derniere trame recue (le RMT ne signale pas une trame en cours) */
 
 static const rmt_receive_config_t s_rx_cfg = {
     .signal_range_min_ns = 2500,           /* filtre <= 255 ticks de 80 MHz (~3.2 us) ; le vrai filtre est logiciel */
@@ -62,7 +64,11 @@ static void rx_task(void *arg)
             ESP_LOGE(TAG, "rmt_receive: %s, reception arretee", esp_err_to_name(e));
             tc_bus_set_running(false);
         }
-        tc_bus_process_window(segs, k, esp_timer_get_time());
+        int64_t now = esp_timer_get_time();
+        taskENTER_CRITICAL(&s_time_lock);
+        s_last_edge_us = now;
+        taskEXIT_CRITICAL(&s_time_lock);
+        tc_bus_process_window(segs, k, now);
     }
 }
 
@@ -105,7 +111,11 @@ esp_err_t tc_rx_start(void)
         return e;
     }
     tc_bus_set_running(true);
+#if CONFIG_TC_BUS_TX_ENABLE
+    ESP_LOGI(TAG, "reception RMT (numerique) sur GPIO%d, emission compilee (TX GPIO%d)",
+#else
     ESP_LOGI(TAG, "reception RMT (numerique) sur GPIO%d, emission NON compilee (TX GPIO%d reste a 0)",
+#endif
              CONFIG_TC_BUS_RX_GPIO, CONFIG_TC_BUS_TX_GPIO);
     return ESP_OK;
 }
@@ -113,5 +123,18 @@ esp_err_t tc_rx_start(void)
 int tc_rx_mv(void)
 {
     return -1;                             /* pas de mesure analogique avec le RMT */
+}
+
+int64_t tc_rx_last_edge_us(void)
+{
+    taskENTER_CRITICAL(&s_time_lock);
+    int64_t t = s_last_edge_us;
+    taskEXIT_CRITICAL(&s_time_lock);
+    return t;
+}
+
+int64_t tc_rx_last_sample_us(void)
+{
+    return esp_timer_get_time();           /* le RMT observe le bus en continu, sans retard de lot */
 }
 #endif

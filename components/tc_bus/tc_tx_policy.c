@@ -55,6 +55,30 @@ void tc_tx_record(tc_tx_limiter_t *l, int64_t now_us)
     l->last_us = now_us;
 }
 
+size_t tc_tx_segments_to_symbols(const tc_segment_t *segs, size_t n, uint32_t *words, size_t max)
+{
+    if (segs == NULL || words == NULL || n == 0 || n > TC_MAX_SEGMENTS) {
+        return 0;
+    }
+    size_t nsym = (n + 1) / 2;
+    if (nsym > max) {
+        return 0;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (segs[i].mark != (i % 2 == 0) || segs[i].duration_us == 0 ||
+            segs[i].duration_us > TC_START_ACK_MAX_US) {
+            return 0;
+        }
+    }
+    for (size_t k = 0; k < nsym; k++) {
+        uint32_t d0 = segs[2 * k].duration_us;
+        uint32_t d1 = (2 * k + 1 < n) ? segs[2 * k + 1].duration_us : TC_TX_RELEASE_US;
+        /* level0 = 1 (mark), level1 = 0 (space) : chaque symbole rend le bus */
+        words[k] = (d0 & 0x7FFFu) | (1u << 15) | ((d1 & 0x7FFFu) << 16);
+    }
+    return nsym;
+}
+
 const char *tc_tx_verdict_name(tc_tx_verdict_t v)
 {
     switch (v) {

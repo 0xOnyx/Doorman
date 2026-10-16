@@ -1,14 +1,11 @@
 #include "tc_bus.h"
 #include <stdio.h>
+#include <string.h>
 #include "tc_bus_priv.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
-#if CONFIG_TC_BUS_TX_ENABLE
-#error "L'emission n'est pas implementee en phase 0 : TC_BUS_TX_ENABLE doit rester a n"
-#endif
 
 _Static_assert(CONFIG_TC_BUS_MY_SERIAL <= 0xFFFFF, "TC_BUS_MY_SERIAL : numero de serie sur 20 bits (<= 0xFFFFF)");
 
@@ -27,6 +24,7 @@ static void *s_ctx;
 static int64_t s_last_err_log_us = -ERR_LOG_PERIOD_US;
 static uint32_t s_err_masked;            /* erreurs non loggees depuis la derniere ligne */
 static int64_t s_last_call_for_me_us;    /* dernier DOOR_CALL (platine de rue) pour moi, 0 si aucun */
+static tc_tx_watch_t s_watch;            /* echo et reponse d'une emission : sous s_stats_lock */
 
 static void count_error(void)
 {
@@ -60,9 +58,56 @@ static void log_error(tc_decode_error_t err, const tc_segment_t *segs, size_t k,
     s_err_masked = 0;
 }
 
+/* Echo de notre emission, ou reponse de la centrale qui le suit (sous s_stats_lock). */
+static void watch_match(const tc_telegram_t *t, int64_t now, bool *echo, bool *reply)
+{
+    *echo = false;
+    *reply = false;
+    if (!s_watch.armed) {
+        return;
+    }
+    if (!s_watch.echo) {
+        bool in_window = s_watch.end_us == 0 || now - s_watch.end_us <= TC_TX_ECHO_WINDOW_US;
+        if (in_window && !t->is_response && t->raw == s_watch.raw && t->is_long == s_watch.is_long) {
+            s_watch.echo = true;
+            s_watch.echo_us = now;
+            s_stats.tx_echo++;
+            *echo = true;
+        }
+        return;                             /* avant l'echo : pas de reponse attendue */
+    }
+    if (!s_watch.reply && now - s_watch.echo_us <= TC_TX_REPLY_WINDOW_US) {
+        s_watch.reply = true;
+        s_watch.reply_raw = t->raw;
+        s_watch.reply_is_long = t->is_long;
+        s_stats.tx_reply++;
+        *reply = true;
+    }
+}
+
 static void handle_telegram(tc_telegram_t *t, int64_t now)
 {
     tc_proto_classify(t);
+    bool echo, reply;
+    taskENTER_CRITICAL(&s_stats_lock);
+    watch_match(t, now, &echo, &reply);
+    taskEXIT_CRITICAL(&s_stats_lock);
+    if (echo) {
+        /* notre propre telegramme : ni "pour moi", ni rappel (spec phase 2, section 4) */
+        taskENTER_CRITICAL(&s_stats_lock);
+        s_stats.frames_ok++;
+        if ((unsigned)t->type < TC_TYPE_COUNT) {
+            s_stats.by_type[t->type]++;
+        }
+        s_stats.last_ok_us = now;
+        s_stats.last_raw = t->raw;
+        s_stats.last_is_long = t->is_long;
+        s_stats.last_type = t->type;
+        taskEXIT_CRITICAL(&s_stats_lock);
+        ESP_LOGI(TAG, "TC RX %s raw=0x%0*lX (echo)", tc_type_name(t->type), t->is_long ? 8 : 4,
+                 (unsigned long)t->raw);
+        return;
+    }
     bool recent = s_last_call_for_me_us != 0 && now - s_last_call_for_me_us < CALL_FOR_ME_WINDOW_US;
     bool for_me = tc_proto_is_for_me(t, CONFIG_TC_BUS_MY_SERIAL, CONFIG_TC_BUS_DOOR_ADDRESS, recent);
     if (for_me && t->type == TC_TYPE_DOOR_CALL) {   /* un appel interne ne concerne pas la porte de rue */
@@ -81,11 +126,11 @@ static void handle_telegram(tc_telegram_t *t, int64_t now)
     s_stats.last_is_long = t->is_long;
     s_stats.last_type = t->type;
     taskEXIT_CRITICAL(&s_stats_lock);
-    ESP_LOGI(TAG, "TC RX %s raw=0x%0*lX len=%u serial=0x%05lX addr=%u payload=0x%lX chk=ok%s%s",
+    ESP_LOGI(TAG, "TC RX %s raw=0x%0*lX len=%u serial=0x%05lX addr=%u payload=0x%lX chk=ok%s%s%s",
              tc_type_name(t->type), t->is_long ? 8 : 4, (unsigned long)t->raw,
              t->is_long ? 32u : (t->type == TC_TYPE_ACK ? 4u : 16u),
              (unsigned long)t->serial, t->address, (unsigned long)t->payload,
-             t->is_response ? " rsp" : "", for_me ? " << POUR MOI" : "");
+             t->is_response ? " rsp" : "", for_me ? " << POUR MOI" : "", reply ? " (reponse a notre emission)" : "");
     if (s_cb) {
         s_cb(t, s_ctx);
     }
@@ -142,6 +187,13 @@ esp_err_t tc_bus_start(tc_bus_rx_cb_t cb, void *ctx)
     if (e != ESP_OK) {
         return e;
     }
+#if CONFIG_TC_BUS_TX_ENABLE
+    /* apres le recepteur : l'emetteur a besoin de lui pour le bus calme et l'echo. Un echec laisse
+       TX GPIO a 0 et l'emission coupee, la reception continue. */
+    if (tc_tx_start() != ESP_OK) {
+        ESP_LOGE(TAG, "emetteur indisponible : emission coupee, TX GPIO%d a 0", CONFIG_TC_BUS_TX_GPIO);
+    }
+#endif
 #if CONFIG_TC_BUS_MY_SERIAL != 0
     ESP_LOGI(TAG, "numero de serie configure : 0x%05lX, platine adresse %d",
              (unsigned long)CONFIG_TC_BUS_MY_SERIAL, CONFIG_TC_BUS_DOOR_ADDRESS);
@@ -168,11 +220,66 @@ void tc_bus_get_stats(tc_bus_stats_t *s)
     taskEXIT_CRITICAL(&s_stats_lock);
 }
 
+int64_t tc_bus_last_edge_us(void)
+{
+    return tc_rx_last_edge_us();
+}
+
+void tc_bus_watch_arm(uint32_t raw, bool is_long)
+{
+    taskENTER_CRITICAL(&s_stats_lock);
+    memset(&s_watch, 0, sizeof s_watch);
+    s_watch.armed = true;
+    s_watch.raw = raw;
+    s_watch.is_long = is_long;
+    taskEXIT_CRITICAL(&s_stats_lock);
+}
+
+void tc_bus_watch_sent(int64_t end_us)
+{
+    taskENTER_CRITICAL(&s_stats_lock);
+    s_watch.end_us = end_us != 0 ? end_us : 1;
+    taskEXIT_CRITICAL(&s_stats_lock);
+}
+
+void tc_bus_watch_get(tc_tx_watch_t *w)
+{
+    taskENTER_CRITICAL(&s_stats_lock);
+    *w = s_watch;
+    taskEXIT_CRITICAL(&s_stats_lock);
+}
+
+void tc_bus_watch_disarm(void)
+{
+    taskENTER_CRITICAL(&s_stats_lock);
+    s_watch.armed = false;
+    taskEXIT_CRITICAL(&s_stats_lock);
+}
+
+void tc_bus_count_tx(bool sent, int64_t now_us)
+{
+    taskENTER_CRITICAL(&s_stats_lock);
+    if (sent) {
+        s_stats.tx_sent++;
+        s_stats.last_tx_us = now_us;
+    } else {
+        s_stats.tx_refused++;
+    }
+    taskEXIT_CRITICAL(&s_stats_lock);
+}
+
+#if !CONFIG_TC_BUS_TX_ENABLE
+/* Emission non compilee : rien a bloquer (tc_tx.c fournit les vraies fonctions). */
 void tc_bus_tx_block(void)
 {
-    /* no-op en phase 0 : rien n'emet */
 }
 
 void tc_bus_tx_unblock(void)
 {
 }
+
+void tc_bus_tx_set_inhibit(tc_bus_tx_inhibit_fn_t fn)
+{
+    (void)fn;
+}
+#endif

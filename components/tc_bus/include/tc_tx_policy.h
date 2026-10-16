@@ -46,6 +46,18 @@ tc_tx_verdict_t tc_tx_check(const tc_tx_limiter_t *l, const tc_telegram_t *t, in
 /* Enregistre une emission a now_us (garde les 5 plus recentes). */
 void tc_tx_record(tc_tx_limiter_t *l, int64_t now_us);
 
+/* Symboles RMT d'emission : mots de 32 bits au format rmt_symbol_word_t (duration0 bits 0-14,
+ * level0 bit 15, duration1 bits 16-30, level1 bit 31), 1 tick = 1 us. Mark = niveau 1 (TX GPIO a 1,
+ * transistor passant, bus tire a 0 V). */
+#define TC_TX_RELEASE_US   100        /* relachement explicite (niveau 0) apres le dernier mark */
+#define TC_TX_MAX_SYMBOLS  ((TC_MAX_SEGMENTS + 1) / 2)
+
+/* Convertit des segments de tc_proto_encode en symboles : paires (mark, space), chaque symbole
+ * finit a 0 ; un nombre impair de segments est complete par TC_TX_RELEASE_US a 0. Refuse (renvoie 0)
+ * si la suite ne commence pas par un mark, n'alterne pas, contient une duree nulle (fin RMT) ou
+ * superieure a TC_START_ACK_MAX_US, ou ne tient pas dans max mots. Sinon renvoie le nombre de mots. */
+size_t tc_tx_segments_to_symbols(const tc_segment_t *segs, size_t n, uint32_t *words, size_t max);
+
 /* "ok", "refused_type", "too_soon", "rate_limit", "bus_busy", "blocked" ; "?" sinon. */
 const char *tc_tx_verdict_name(tc_tx_verdict_t v);
 

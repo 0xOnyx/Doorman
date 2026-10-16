@@ -228,6 +228,91 @@ static void test_verdict_names(void)
     CHECK(strcmp(tc_tx_verdict_name((tc_tx_verdict_t)99), "?") == 0);
 }
 
+static unsigned w_d0(uint32_t w) { return w & 0x7FFFu; }
+static unsigned w_l0(uint32_t w) { return (w >> 15) & 1u; }
+static unsigned w_d1(uint32_t w) { return (w >> 16) & 0x7FFFu; }
+static unsigned w_l1(uint32_t w) { return (w >> 31) & 1u; }
+
+static void test_symbols_open_long(void)
+{
+    tc_segment_t seg[TC_MAX_SEGMENTS];
+    uint32_t w[TC_TX_MAX_SYMBOLS];
+    size_t n = tc_proto_encode(0x14DEF480, true, false, seg, TC_MAX_SEGMENTS);
+    CHECK_EQ(n, 35);
+    size_t k = tc_tx_segments_to_symbols(seg, n, w, TC_TX_MAX_SYMBOLS);
+    CHECK_EQ(k, 18);
+    /* premier symbole : depart (mark = 1) puis LEN long (space = 0) */
+    CHECK_EQ(w_d0(w[0]), 5985);
+    CHECK_EQ(w_l0(w[0]), 1);
+    CHECK_EQ(w_d1(w[0]), 4000);
+    CHECK_EQ(w_l1(w[0]), 0);
+    for (size_t i = 0; i < k; i++) {
+        CHECK_EQ(w_l0(w[i]), 1);
+        CHECK_EQ(w_l1(w[i]), 0);   /* chaque symbole se termine a 0 : jamais de bus tenu bas */
+        CHECK(w_d0(w[i]) > 0);
+        CHECK(w_d1(w[i]) > 0);
+    }
+    /* dernier : CHK (mark) puis relachement explicite */
+    CHECK_EQ(w_d0(w[17]), seg[34].duration_us);
+    CHECK_EQ(w_d1(w[17]), TC_TX_RELEASE_US);
+    /* aller-retour : les mots relus donnent les memes segments, inverses (RX : mark = niveau 0) */
+    tc_segment_t back[TC_MAX_SEGMENTS];
+    uint32_t inv[TC_TX_MAX_SYMBOLS];
+    for (size_t i = 0; i < k; i++) {
+        inv[i] = w[i] ^ 0x80008000u;
+    }
+    size_t m = tc_proto_rmt_words_to_segments(inv, k, back, TC_MAX_SEGMENTS);
+    CHECK_EQ(m, 36);
+    m = tc_proto_strip_trailing_idle(back, m - 1);   /* sans le relachement */
+    tc_telegram_t t;
+    tc_decode_error_t err;
+    CHECK(tc_proto_decode(back, m, &t, &err));
+    CHECK_EQ(t.raw, 0x14DEF480);
+    CHECK(t.is_long);
+}
+
+static void test_symbols_open_short(void)
+{
+    tc_segment_t seg[TC_MAX_SEGMENTS];
+    uint32_t w[TC_TX_MAX_SYMBOLS];
+    size_t n = tc_proto_encode(0x1100, false, false, seg, TC_MAX_SEGMENTS);
+    CHECK_EQ(tc_tx_segments_to_symbols(seg, n, w, TC_TX_MAX_SYMBOLS), 10);
+    CHECK_EQ(w_d1(w[9]), TC_TX_RELEASE_US);
+    CHECK_EQ(w_l1(w[9]), 0);
+}
+
+static void test_symbols_rejects(void)
+{
+    tc_segment_t seg[TC_MAX_SEGMENTS];
+    uint32_t w[TC_TX_MAX_SYMBOLS];
+    size_t n = tc_proto_encode(0x1100, false, false, seg, TC_MAX_SEGMENTS);
+    CHECK_EQ(tc_tx_segments_to_symbols(seg, n, w, 9), 0);          /* tampon trop petit */
+    CHECK_EQ(tc_tx_segments_to_symbols(NULL, n, w, 20), 0);
+    CHECK_EQ(tc_tx_segments_to_symbols(seg, n, NULL, 20), 0);
+    CHECK_EQ(tc_tx_segments_to_symbols(seg, 0, w, 20), 0);
+    tc_segment_t bad[TC_MAX_SEGMENTS];
+    memcpy(bad, seg, sizeof bad);
+    bad[0].mark = false;                                              /* ne commence pas par un mark */
+    CHECK_EQ(tc_tx_segments_to_symbols(bad, n, w, 20), 0);
+    memcpy(bad, seg, sizeof bad);
+    bad[4].mark = !bad[4].mark;                                       /* alternance cassee */
+    CHECK_EQ(tc_tx_segments_to_symbols(bad, n, w, 20), 0);
+    memcpy(bad, seg, sizeof bad);
+    bad[3].duration_us = 0;                                           /* duree nulle = fin RMT */
+    CHECK_EQ(tc_tx_segments_to_symbols(bad, n, w, 20), 0);
+    memcpy(bad, seg, sizeof bad);
+    bad[6].duration_us = 40000;                                       /* > 15 bits */
+    CHECK_EQ(tc_tx_segments_to_symbols(bad, n, w, 20), 0);
+    memcpy(bad, seg, sizeof bad);
+    bad[0].duration_us = 7001;                                        /* mark plus long qu'un depart */
+    CHECK_EQ(tc_tx_segments_to_symbols(bad, n, w, 20), 0);
+    CHECK_EQ(tc_tx_segments_to_symbols(seg, TC_MAX_SEGMENTS + 1, w, 100), 0);
+    /* nombre pair : se termine deja par un space, pas de relachement ajoute */
+    CHECK_EQ(tc_tx_segments_to_symbols(seg, 18, w, 20), 9);
+    CHECK_EQ(w_d1(w[8]), seg[17].duration_us);
+    CHECK_EQ(w_l1(w[8]), 0);
+}
+
 int main(void)
 {
     RUN(test_open_raw);
@@ -240,5 +325,8 @@ int main(void)
     RUN(test_bus_busy);
     RUN(test_record);
     RUN(test_verdict_names);
+    RUN(test_symbols_open_long);
+    RUN(test_symbols_open_short);
+    RUN(test_symbols_rejects);
     T_END();
 }

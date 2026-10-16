@@ -46,8 +46,27 @@ menu "Bus TC (tc_bus)"
             20 kHz : un echantillon toutes les 50 us, largement assez pour des fenetres de bits
             de +-1000 us et un depart de 5700 a 6089 us.
     config TC_BUS_TX_ENABLE
-        bool "Compiler l'emission (DOIT rester desactive en phase 0)"
+        bool "Compiler l'emission (ouverture de porte, phase 2)"
         default n
+        help
+            Compile l'emetteur RMT sur TC_BUS_TX_GPIO et POST /bus/open-door. Le bus est partage
+            par tout l'immeuble : seul le telegramme d'ouverture choisi ci-dessous peut etre emis,
+            avec les garde-fous (liste blanche, 200 ms entre deux emissions, 5 par minute, bus
+            calme depuis 200 ms, refus pendant une OTA et le SoftAP de secours). Desactive :
+            aucun code d'emission n'est compile, TX GPIO reste a 0.
+    choice TC_BUS_OPEN_FORM
+        prompt "Telegramme d'ouverture emis"
+        depends on TC_BUS_TX_ENABLE
+        default TC_BUS_OPEN_FORM_LONG
+        help
+            LONG : OPEN_DOOR_LONG (1 << 28) | serie << 8 | 0x80 | adresse, observe hors
+            communication (0x14DEF480 pour la serie 0x4DEF4, adresse 0). Exige TC_BUS_MY_SERIAL.
+            SHORT : OPEN_DOOR 0x1100 | adresse, observe pendant une communication.
+        config TC_BUS_OPEN_FORM_LONG
+            bool "Long (OPEN_DOOR_LONG, avec le numero de serie)"
+        config TC_BUS_OPEN_FORM_SHORT
+            bool "Court (OPEN_DOOR 0x1100 | adresse)"
+    endchoice
     config TC_BUS_GLITCH_US
         int "Segments plus courts que ceci sont des parasites (us)"
         range 100 2000

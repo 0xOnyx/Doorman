@@ -55,6 +55,22 @@ static tc_slicer_t s_sl;
 static uint8_t s_buf[FRAME_BYTES];
 static volatile uint32_t s_ovf;          /* debordements de la reserve du pilote (ISR) */
 static volatile int s_last_raw = -1;     /* dernier echantillon, -1 avant le premier */
+/* Activite du bus pour l'emetteur : lus par une autre tache, 64 bits => sous verrou */
+static portMUX_TYPE s_time_lock = portMUX_INITIALIZER_UNLOCKED;
+static int64_t s_last_edge_us;           /* dernier lot avec un front, un bas ou une perte d'echantillons */
+static int64_t s_last_sample_us;         /* dernier lot d'echantillons traite */
+
+static void note_activity(int64_t now, bool edge, bool sample)
+{
+    taskENTER_CRITICAL(&s_time_lock);
+    if (edge) {
+        s_last_edge_us = now;
+    }
+    if (sample) {
+        s_last_sample_us = now;
+    }
+    taskEXIT_CRITICAL(&s_time_lock);
+}
 
 static bool IRAM_ATTR on_pool_ovf(adc_continuous_handle_t h, const adc_continuous_evt_data_t *ed, void *ctx)
 {
@@ -106,6 +122,7 @@ static void adc_task(void *arg)
         esp_err_t e = adc_continuous_read(s_adc, s_buf, sizeof s_buf, &len, READ_TIMEOUT_MS);
         int64_t now = esp_timer_get_time();
         if (e != ESP_OK) {
+            note_activity(now, true, false);   /* bus non observe : compte comme actif */
             if (!timed_out) {
                 ESP_LOGE(TAG, "adc_continuous_read: %s, plus d'echantillon", esp_err_to_name(e));
                 timed_out = true;
@@ -136,6 +153,7 @@ static void adc_task(void *arg)
             ovf_masked += ovf - ovf_seen;
             ovf_seen = ovf;
             tc_slicer_reset(&s_sl);
+            note_activity(now, true, false);   /* trou dans les echantillons : prudence */
             win_gap = true;
             if (now - last_warn_us >= WARN_PERIOD_US) {
                 ESP_LOGW(TAG, "ADC : reserve pleine, %lu trame(s) de conversion perdue(s)", (unsigned long)ovf_masked);
@@ -144,6 +162,7 @@ static void adc_task(void *arg)
             }
         }
         int raw = -1;
+        uint32_t edges_before = s_sl.edges;
         for (uint32_t i = 0; i + SOC_ADC_DIGI_RESULT_BYTES <= len; i += SOC_ADC_DIGI_RESULT_BYTES) {
             const adc_digi_output_data_t *d = (const adc_digi_output_data_t *)&s_buf[i];
             if (d->type2.unit != ADC_UNIT_1 || d->type2.channel != s_chan) {
@@ -159,6 +178,8 @@ static void adc_task(void *arg)
         }
         if (raw >= 0) {
             s_last_raw = raw;
+            /* date du lot (fin de lecture) : posterieure aux fronts qu'il contient, donc prudente */
+            note_activity(now, s_sl.edges != edges_before || s_sl.low, true);
         }
         if (now - win_start_us >= WINDOW_US) {
             uint32_t edges = tc_slicer_take_edges(&s_sl);
@@ -254,7 +275,11 @@ esp_err_t tc_rx_start(void)
     }
     tc_bus_set_running(true);
     ESP_LOGI(TAG, "reception ADC sur GPIO%d (ADC1 canal %d, %d Hz) : bas < %d mV (brut %u), haut >= %d mV (brut %u)%s ; "
+#if CONFIG_TC_BUS_TX_ENABLE
+             "emission compilee (TX GPIO%d)",
+#else
              "emission NON compilee (TX GPIO%d reste a 0)",
+#endif
              CONFIG_TC_BUS_RX_GPIO, (int)s_chan, SAMPLE_HZ, CONFIG_TC_BUS_ADC_LOW_MV, low_raw,
              CONFIG_TC_BUS_ADC_HIGH_MV, high_raw, s_cali ? "" : " sans calibration", CONFIG_TC_BUS_TX_GPIO);
     return ESP_OK;
@@ -264,5 +289,21 @@ int tc_rx_mv(void)
 {
     int raw = s_last_raw;
     return raw < 0 ? -1 : raw_to_mv(raw);
+}
+
+int64_t tc_rx_last_edge_us(void)
+{
+    taskENTER_CRITICAL(&s_time_lock);
+    int64_t t = s_last_edge_us;
+    taskEXIT_CRITICAL(&s_time_lock);
+    return t;
+}
+
+int64_t tc_rx_last_sample_us(void)
+{
+    taskENTER_CRITICAL(&s_time_lock);
+    int64_t t = s_last_sample_us;
+    taskEXIT_CRITICAL(&s_time_lock);
+    return t;
 }
 #endif
