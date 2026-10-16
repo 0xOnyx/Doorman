@@ -308,7 +308,7 @@ La commande est synchrone (quelques secondes au plus) : la carte attend que le b
 | Réponse | Signification |
 |---|---|
 | `200 {"sent":true,"raw":"0x14DEF480","echo":true,"reply":"0x0001"}` | Émis. `echo` : relu à l'identique sur le bus ; `reply` : réponse de la centrale (`0x0001` après une ouverture), `null` si aucune dans les 500 ms |
-| `409 {"sent":false,"reason":"too_soon"}` | Moins de 200 ms depuis la dernière émission (ou une émission est en cours) |
+| `409 {"sent":false,"reason":"too_soon"}` | Une ouverture a déjà été émise il y a moins de 3 s (un `curl` répété ne rouvre pas la porte) |
 | `409 {"sent":false,"reason":"rate_limit"}` | Déjà 5 émissions dans la dernière minute : attendre |
 | `503 {"sent":false,"reason":"bus_busy"}` | Le bus n'a pas été calme 200 ms de suite pendant 2 s (une communication est en cours) |
 | `503 {"sent":false,"reason":"blocked"}` | OTA en cours, point d'accès de secours actif, ou réception du bus arrêtée |

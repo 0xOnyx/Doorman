@@ -121,9 +121,9 @@ static esp_err_t info_get(httpd_req_t *req)
             snprintf(age, sizeof age, "null");
         }
         m = snprintf(body + n, cap - n,
-            "\"tx\":{\"enabled\":true,\"form\":\"%s\",\"raw\":\"0x%0*lX\",\"sent\":%" PRIu32 ","
+            "\"tx\":{\"enabled\":true,\"ready\":%s,\"form\":\"%s\",\"raw\":\"0x%0*lX\",\"sent\":%" PRIu32 ","
             "\"echo\":%" PRIu32 ",\"reply\":%" PRIu32 ",\"refused\":%" PRIu32 ",\"last_age_s\":%s},",
-            open_long ? "long" : "short", open_long ? 8 : 4, (unsigned long)open_raw,
+            tc_bus_tx_ready() ? "true" : "false", open_long ? "long" : "short", open_long ? 8 : 4, (unsigned long)open_raw,
             bs.tx_sent, bs.tx_echo, bs.tx_reply, bs.tx_refused, age);
     }
 #else

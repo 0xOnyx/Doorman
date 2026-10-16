@@ -49,12 +49,18 @@ static const char *TAG = "tc_bus";
 #define QUIET_WAIT_US      (2LL * 1000000)
 #define SAMPLE_FRESH_US    50000LL       /* recepteur ADC en retard de plus : bus considere actif */
 #define MUTEX_WAIT_MS      100
+#define OPEN_COOLDOWN_US   (3LL * 1000000)   /* apres une ouverture emise : une seconde demande dans les 3 s est refusee */
+
+#if !CONFIG_TC_BUS_RX_ADC
+#error "L'emission exige le recepteur ADC : le recepteur RMT ne voit pas un telegramme en cours (controle bus calme)"
+#endif
 #define POLL_MS            10
 
 static rmt_channel_handle_t s_ch;
 static rmt_encoder_handle_t s_enc;
 static SemaphoreHandle_t s_mutex;
 static tc_tx_limiter_t s_lim;            /* sous s_mutex */
+static int64_t s_last_open_us;           /* sous s_mutex : derniere ouverture emise, 0 si aucune */
 static rmt_symbol_word_t s_sym[TX_SYM_MAX];   /* lu par le pilote jusqu'a la fin : statique */
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_block;                 /* blocages en cours (OTA), sous s_lock */
@@ -210,6 +216,15 @@ esp_err_t tc_bus_open_door(tc_bus_tx_result_t *r)
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* une ouverture vient d'etre emise : un second appel (ex. curl repete) ne rouvre pas la porte */
+    if (s_last_open_us != 0 && esp_timer_get_time() - s_last_open_us < OPEN_COOLDOWN_US) {
+        r->verdict = TC_TX_TOO_SOON;
+        tc_bus_count_tx(false, 0);
+        xSemaphoreGive(s_mutex);
+        ESP_LOGW(TAG, "TX %s refuse : ouverture deja emise il y a moins de 3 s", tc_type_name(t.type));
+        return ESP_ERR_INVALID_STATE;
+    }
+
     /* politique ; bus occupe : on attend jusqu'a 2 s un bus calme depuis 200 ms */
     const int64_t t0 = esp_timer_get_time();
     tc_tx_verdict_t v;
@@ -244,6 +259,7 @@ esp_err_t tc_bus_open_door(tc_bus_tx_result_t *r)
     /* compte avant d'emettre : un echec RMT consomme aussi le quota (prudence) */
     const int64_t tx_start = now;
     tc_tx_record(&s_lim, now);
+    s_last_open_us = now;
     tc_bus_count_tx(true, now);
     tc_bus_watch_arm(t.raw, t.is_long);
     const rmt_transmit_config_t tc = { .loop_count = 0, .flags = { .eot_level = 0 } };
@@ -291,5 +307,18 @@ esp_err_t tc_bus_open_door(tc_bus_tx_result_t *r)
              tc_type_name(t.type), t.is_long ? 8 : 4, (unsigned long)t.raw, w.echo ? "oui" : "non", rep,
              (long long)((end - tx_start) / 1000), (long long)((tx_start - t0) / 1000));
     return ESP_OK;
+}
+
+bool tc_bus_tx_ready(void)
+{
+    return s_ch != NULL && !s_dead;
+}
+#else
+#include <stdbool.h>
+#include "tc_bus.h"
+
+bool tc_bus_tx_ready(void)
+{
+    return false;
 }
 #endif

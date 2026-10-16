@@ -66,4 +66,7 @@ esp_err_t tc_bus_open_door(tc_bus_tx_result_t *r);
 /* Telegramme d'ouverture configure (seulement avec TC_BUS_TX_ENABLE). */
 uint32_t  tc_bus_open_door_raw(bool *is_long);
 
+/* true si l emetteur est cree et pas en echec (toujours false sans TC_BUS_TX_ENABLE). */
+bool tc_bus_tx_ready(void);
+
 #endif
