@@ -29,7 +29,7 @@ _Static_assert(CONFIG_TC_BUS_TX_GPIO != CONFIG_TC_BUS_RX_GPIO, "RX et TX sur la 
 
 static const char *TAG = "main";
 
-/* Spec 3 regle 1 : GPIO10 (TX bus) en sortie a 0 avant toute autre chose. */
+/* Spec 3 regle 1 : TX bus (TC_BUS_TX_GPIO) en sortie a 0 avant toute autre chose. */
 static void bus_gpio_safe(void)
 {
     gpio_set_level(CONFIG_TC_BUS_TX_GPIO, 0);
@@ -162,10 +162,12 @@ void app_main(void)
     netlog_server_start(CONFIG_APP_NETLOG_PORT);
 #endif
     app_ota_start();
+    /* emission refusee tant que le SoftAP de secours est actif (sans effet si TX non compile) */
+    tc_bus_tx_set_inhibit(app_net_recovery_ap_active);
     tc_bus_start(on_telegram, NULL);
     /* Diagnostic de boot, apres tc_bus_start pour voir la configuration des broches du bus :
        attendu RX sans pull (analogique avec le recepteur ADC : entree numerique coupee), TX sortie
-       a 0. Ecrit sur stdout : console seulement, pas dans les logs reseau. */
+       a 0 (avec l'emission compilee : signal du canal RMT, repos a 0). Ecrit sur stdout : console seulement, pas dans les logs reseau. */
     gpio_dump_io_configuration(stdout, (1ULL << CONFIG_TC_BUS_RX_GPIO) | (1ULL << CONFIG_TC_BUS_TX_GPIO));
     app_selftest_start();
 

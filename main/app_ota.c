@@ -69,10 +69,11 @@ static void token_warn_cb(void *arg)
     ESP_LOGE(TAG, "APP_OTA_TOKEN trop court (< %d caracteres) : OTA et /info refuses", TOKEN_MIN_LEN);
 }
 
-/* Corps de /info. Pire cas 753 octets (version 31, idf compte 32, labels 16, etats "pending_verify",
- * entiers 64 bits au minimum, compteurs 32 bits a 4294967295, rssi INT_MIN, type
- * "END_OF_DOOR_READINESS") : marge pour un idf plus long ; tout depassement est detecte (500). Statique : un seul handler
- * httpd a la fois (tache unique), pas de place prise sur la pile. */
+/* Corps de /info. Pire cas 919 octets avec l'emission compilee (version 31, idf compte 32, labels 16,
+ * etats "pending_verify", entiers 64 bits au minimum, compteurs 32 bits a 4294967295, rssi INT_MIN,
+ * type "END_OF_DOOR_READINESS", objet tx complet de 166), 776 sans : marge pour un idf plus long ; tout
+ * depassement est detecte (500). Statique : un seul handler httpd a la fois (tache unique), pas de
+ * place prise sur la pile. */
 #define INFO_BODY_LEN 1024
 static char s_info_body[INFO_BODY_LEN];
 
@@ -108,7 +109,31 @@ static esp_err_t info_get(httpd_req_t *req)
     if (n < 0 || n >= cap) {
         return reply_close(req, "500 Internal Server Error", "info too long\n");
     }
-    int m = snprintf(body + n, cap - n,
+    int m;
+#if CONFIG_TC_BUS_TX_ENABLE
+    {
+        bool open_long;
+        uint32_t open_raw = tc_bus_open_door_raw(&open_long);
+        char age[24];
+        if (bs.last_tx_us != 0) {
+            snprintf(age, sizeof age, "%lld", (long long)((now - bs.last_tx_us) / 1000000));
+        } else {
+            snprintf(age, sizeof age, "null");
+        }
+        m = snprintf(body + n, cap - n,
+            "\"tx\":{\"enabled\":true,\"form\":\"%s\",\"raw\":\"0x%0*lX\",\"sent\":%" PRIu32 ","
+            "\"echo\":%" PRIu32 ",\"reply\":%" PRIu32 ",\"refused\":%" PRIu32 ",\"last_age_s\":%s},",
+            open_long ? "long" : "short", open_long ? 8 : 4, (unsigned long)open_raw,
+            bs.tx_sent, bs.tx_echo, bs.tx_reply, bs.tx_refused, age);
+    }
+#else
+    m = snprintf(body + n, cap - n, "\"tx\":{\"enabled\":false},");
+#endif
+    if (m < 0 || m >= cap - n) {
+        return reply_close(req, "500 Internal Server Error", "info too long\n");
+    }
+    n += m;
+    m = snprintf(body + n, cap - n,
         "\"bus\":{\"ok\":%" PRIu32 ",\"err\":%" PRIu32 ",\"for_me\":%" PRIu32 ",\"my_serial\":",
         bs.frames_ok, bs.frames_err, bs.for_me);
     if (m < 0 || m >= cap - n) {
@@ -170,6 +195,72 @@ static esp_err_t reboot_post(httpd_req_t *req)
     }
     return ESP_OK;
 }
+
+#if CONFIG_TC_BUS_TX_ENABLE
+/* POST /bus/open-door (temporaire, retire en phase 4) : emet le telegramme d'ouverture configure.
+ * Aucun parametre : le corps est lu et jete sans etre interprete ; aucun telegramme ne vient du
+ * reseau. Synchrone : attente du bus calme (2 s au plus), emission, echo et reponse (1,5 s). */
+#define OPEN_DOOR_BODY_MAX 1024
+
+static esp_err_t open_door_post(httpd_req_t *req)
+{
+    if (!check_auth(req)) {
+        return ESP_FAIL;
+    }
+    if (req->content_len > OPEN_DOOR_BODY_MAX) {
+        return reply_close(req, "413 Payload Too Large", "no body expected\n");
+    }
+    char sink[64];
+    size_t left = req->content_len;
+    while (left > 0) {
+        int r = httpd_req_recv(req, sink, left < sizeof sink ? left : sizeof sink);
+        if (r <= 0) {
+            return reply_close(req, "400 Bad Request", "body receive error\n");
+        }
+        left -= (size_t)r;
+    }
+
+    tc_bus_tx_result_t r;
+    esp_err_t e = tc_bus_open_door(&r);
+    char body[160];
+    const char *status;
+    if (e == ESP_OK) {
+        char rep[16];
+        if (r.reply) {
+            snprintf(rep, sizeof rep, "\"0x%0*lX\"", r.reply_is_long ? 8 : 4, (unsigned long)r.reply_raw);
+        } else {
+            snprintf(rep, sizeof rep, "null");
+        }
+        snprintf(body, sizeof body, "{\"sent\":true,\"raw\":\"0x%0*lX\",\"echo\":%s,\"reply\":%s}\n",
+                 r.is_long ? 8 : 4, (unsigned long)r.raw, r.echo ? "true" : "false", rep);
+        status = "200 OK";
+    } else if (e == ESP_ERR_INVALID_STATE) {
+        switch (r.verdict) {
+        case TC_TX_TOO_SOON:
+        case TC_TX_RATE_LIMIT:
+            status = "409 Conflict";
+            break;
+        case TC_TX_BUS_BUSY:
+        case TC_TX_BLOCKED:
+            status = "503 Service Unavailable";
+            break;
+        default:
+            status = "500 Internal Server Error";
+            break;
+        }
+        snprintf(body, sizeof body, "{\"sent\":false,\"reason\":\"%s\"}\n", tc_tx_verdict_name(r.verdict));
+    } else {
+        status = "500 Internal Server Error";
+        snprintf(body, sizeof body, "{\"sent\":false,\"reason\":\"rmt_error\",\"error\":\"%s\"}\n",
+                 esp_err_to_name(e));
+    }
+    ESP_LOGI(TAG, "/bus/open-door -> %s %s", status, body);
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, body);
+    return ESP_OK;
+}
+#endif
 
 /* Fin d'une OTA. reboot=true : la reponse 200 est envoyee et le redemarrage est programme.
  * reboot=false : echec, on libere le bus et on previent app_net (arret differe du SoftAP). */
@@ -314,8 +405,19 @@ void app_ota_start(void)
     httpd_register_uri_handler(s_server, &reboot);
     const httpd_uri_t ota = { .uri = "/ota", .method = HTTP_POST, .handler = ota_post };
     httpd_register_uri_handler(s_server, &ota);
+#if CONFIG_TC_BUS_TX_ENABLE
+    /* 4 gestionnaires sur max_uri_handlers = 8 (HTTPD_DEFAULT_CONFIG) */
+    const httpd_uri_t open_door = { .uri = "/bus/open-door", .method = HTTP_POST, .handler = open_door_post };
+    e = httpd_register_uri_handler(s_server, &open_door);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "enregistrement de /bus/open-door: %s", esp_err_to_name(e));
+    }
+    s_running = true;
+    ESP_LOGI(TAG, "serveur HTTP sur le port %d (/info, /ota, /reboot, /bus/open-door)", CONFIG_APP_HTTP_PORT);
+#else
     s_running = true;
     ESP_LOGI(TAG, "serveur HTTP sur le port %d (/info, /ota, /reboot)", CONFIG_APP_HTTP_PORT);
+#endif
 }
 
 bool app_ota_is_running(void)
