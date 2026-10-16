@@ -40,3 +40,7 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 
 # SO_LINGER : une reponse de refus (401, 413...) envoyee avant la lecture du corps arrive au client
 CONFIG_LWIP_SO_LINGER=y
+
+# Recepteur ADC : ISR en IRAM, sinon une ecriture flash (OTA, validation) bloque l'ISR plus
+# longtemps que les 25 ms de tampons DMA et le canal peut s'arreter
+CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y

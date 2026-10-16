@@ -64,6 +64,7 @@ Ctrl+C pour quitter.
 | `reception ADC sur GPIO9 (ADC1 canal 8, 20000 Hz) : bas < 1700 mV ...` | Au démarrage : le récepteur lit le bus en analogique (voir section 7) |
 | `bus repos min=2930 max=2990 mV (20000 Hz)` | Toutes les 30 s quand le bus est resté au repos : tension mesurée sur la broche RX et cadence réelle de l'ADC. Rien de plus quand il y a eu du trafic (les lignes `TC RX` suffisent) |
 | `ADC : reserve pleine, N trame(s) de conversion perdue(s)` | La tâche de réception a pris du retard (OTA en cours par exemple) : un télégramme a pu être manqué. Rare et sans gravité ; fréquent = à signaler |
+| `relance de l'ADC (...)` | Le convertisseur ne donnait plus d'échantillons : la carte le relance seule. Une fois de temps en temps, sans gravité ; en boucle = à signaler |
 | `nouvelle image en attente : auto-test (90 s max)` | Premier démarrage d'une nouvelle version |
 | `SELFTEST OK, image validee` | La nouvelle version est gardée |
 | `SELFTEST FAILED ... rollback` | La nouvelle version est rejetée, retour automatique à la précédente |

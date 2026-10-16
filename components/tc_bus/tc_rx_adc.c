@@ -42,7 +42,9 @@ static const char *TAG = "tc_bus";
 #define FULL_SCALE_MV    3100              /* sans calibration : 12 dB, 12 bits, approximation lineaire */
 #define WINDOW_US        (30LL * 1000000)  /* ligne de repos et mesure de la cadence */
 #define WARN_PERIOD_US   (10LL * 1000000)  /* au plus un avertissement de debordement par 10 s */
-#define RATE_TOL_PCT     5                 /* cadence mesuree acceptee a +-5 % du nominal */
+#define RATE_TOL_PCT     20                /* cadence mesuree (exacte, base esp_timer) adoptee a +-20 % du nominal */
+#define IDLE_LOG_US      (5LL * 60 * 1000000)  /* ligne "bus repos" au plus toutes les 5 min */
+#define RESTART_MIN_US   (5LL * 1000000)       /* redemarrage de l'ADC au plus toutes les 5 s */
 
 _Static_assert(FRAME_BYTES % SOC_ADC_DIGI_DATA_BYTES_PER_CONV == 0, "conv_frame_size multiple de 4");
 
@@ -96,6 +98,9 @@ static void adc_task(void *arg)
     bool win_gap = true;                   /* la premiere fenetre inclut le demarrage : pas de mesure de cadence */
     int win_min = 4095, win_max = 0;
     bool timed_out = false;
+    int64_t last_idle_log = -IDLE_LOG_US;
+    int64_t last_restart = 0;
+    uint32_t last_rate_logged = 0;
     for (;;) {
         uint32_t len = 0;
         esp_err_t e = adc_continuous_read(s_adc, s_buf, sizeof s_buf, &len, READ_TIMEOUT_MS);
@@ -109,6 +114,13 @@ static void adc_task(void *arg)
             }
             if (e != ESP_ERR_TIMEOUT) {
                 vTaskDelay(pdMS_TO_TICKS(100));    /* erreur d'etat : ne pas tourner a vide */
+            }
+            /* plus d'echantillon (DMA arrete, par ex. apres une longue ecriture flash) : relancer le pilote */
+            if (now - last_restart >= RESTART_MIN_US) {
+                last_restart = now;
+                esp_err_t se = adc_continuous_stop(s_adc);
+                esp_err_t ss = adc_continuous_start(s_adc);
+                ESP_LOGW(TAG, "relance de l'ADC (stop %s, start %s)", esp_err_to_name(se), esp_err_to_name(ss));
             }
             win_gap = true;
             continue;
@@ -155,12 +167,17 @@ static void adc_task(void *arg)
                 if (rate * 100 >= (uint32_t)SAMPLE_HZ * (100 - RATE_TOL_PCT) &&
                     rate * 100 <= (uint32_t)SAMPLE_HZ * (100 + RATE_TOL_PCT)) {
                     tc_slicer_set_period(&s_sl, 1000000000u / rate);
+                    if (rate / 100 != last_rate_logged / 100) {
+                        ESP_LOGI(TAG, "cadence ADC mesuree %lu Hz adoptee", (unsigned long)rate);
+                        last_rate_logged = rate;
+                    }
                 } else {
                     ESP_LOGW(TAG, "ADC : cadence mesuree %lu Hz loin de %d Hz, duree nominale gardee",
                              (unsigned long)rate, SAMPLE_HZ);
                 }
             }
-            if (edges == 0 && win_samples > 0) {
+            if (edges == 0 && win_samples > 0 && now - last_idle_log >= IDLE_LOG_US) {
+                last_idle_log = now;
                 ESP_LOGI(TAG, "bus repos min=%d max=%d mV (%lu Hz)", raw_to_mv(win_min), raw_to_mv(win_max),
                          (unsigned long)rate);
             }
