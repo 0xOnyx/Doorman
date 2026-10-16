@@ -14,6 +14,7 @@
 #include "app_status.h"
 #include "app_net.h"
 #include "tc_bus.h"
+#include "app_homekit.h"
 
 static const char *TAG = "ota";
 
@@ -57,6 +58,27 @@ static bool check_auth(httpd_req_t *req)
     return ok;
 }
 
+/* Lit et jette un corps eventuel (aucun parametre attendu). false : reponse d'erreur deja envoyee. */
+#define NO_BODY_MAX 1024
+static bool drain_body(httpd_req_t *req)
+{
+    if (req->content_len > NO_BODY_MAX) {
+        reply_close(req, "413 Payload Too Large", "no body expected\n");
+        return false;
+    }
+    char sink[64];
+    size_t left = req->content_len;
+    while (left > 0) {
+        int r = httpd_req_recv(req, sink, left < sizeof sink ? left : sizeof sink);
+        if (r <= 0) {
+            reply_close(req, "400 Bad Request", "body receive error\n");
+            return false;
+        }
+        left -= (size_t)r;
+    }
+    return true;
+}
+
 static void reboot_cb(void *arg)
 {
     (void)arg;
@@ -69,11 +91,11 @@ static void token_warn_cb(void *arg)
     ESP_LOGE(TAG, "APP_OTA_TOKEN trop court (< %d caracteres) : OTA et /info refuses", TOKEN_MIN_LEN);
 }
 
-/* Corps de /info. Pire cas 919 octets avec l'emission compilee (version 31, idf compte 32, labels 16,
+/* Corps de /info. Pire cas 968 octets avec l'emission compilee (version 31, idf compte 32, labels 16,
  * etats "pending_verify", entiers 64 bits au minimum, compteurs 32 bits a 4294967295, rssi INT_MIN,
- * type "END_OF_DOOR_READINESS", objet tx complet de 166), 776 sans : marge pour un idf plus long ; tout
- * depassement est detecte (500). Statique : un seul handler httpd a la fois (tache unique), pas de
- * place prise sur la pile. */
+ * type "END_OF_DOOR_READINESS", objet tx complet de 166, objet homekit de 49), 825 sans : marge pour
+ * un idf plus long ; tout depassement est detecte (500). Statique : un seul handler httpd a la fois
+ * (tache unique), pas de place prise sur la pile. */
 #define INFO_BODY_LEN 1024
 static char s_info_body[INFO_BODY_LEN];
 
@@ -129,6 +151,12 @@ static esp_err_t info_get(httpd_req_t *req)
 #else
     m = snprintf(body + n, cap - n, "\"tx\":{\"enabled\":false},");
 #endif
+    if (m < 0 || m >= cap - n) {
+        return reply_close(req, "500 Internal Server Error", "info too long\n");
+    }
+    n += m;
+    m = snprintf(body + n, cap - n, "\"homekit\":{\"started\":%s,\"paired\":%d},",
+                 app_homekit_is_started() ? "true" : "false", app_homekit_paired_count());
     if (m < 0 || m >= cap - n) {
         return reply_close(req, "500 Internal Server Error", "info too long\n");
     }
@@ -200,24 +228,13 @@ static esp_err_t reboot_post(httpd_req_t *req)
 /* POST /bus/open-door (temporaire, retire en phase 4) : emet le telegramme d'ouverture configure.
  * Aucun parametre : le corps est lu et jete sans etre interprete ; aucun telegramme ne vient du
  * reseau. Synchrone : attente du bus calme (2 s au plus), emission, echo et reponse (1,5 s). */
-#define OPEN_DOOR_BODY_MAX 1024
-
 static esp_err_t open_door_post(httpd_req_t *req)
 {
     if (!check_auth(req)) {
         return ESP_FAIL;
     }
-    if (req->content_len > OPEN_DOOR_BODY_MAX) {
-        return reply_close(req, "413 Payload Too Large", "no body expected\n");
-    }
-    char sink[64];
-    size_t left = req->content_len;
-    while (left > 0) {
-        int r = httpd_req_recv(req, sink, left < sizeof sink ? left : sizeof sink);
-        if (r <= 0) {
-            return reply_close(req, "400 Bad Request", "body receive error\n");
-        }
-        left -= (size_t)r;
+    if (!drain_body(req)) {
+        return ESP_FAIL;
     }
 
     tc_bus_tx_result_t r;
@@ -261,6 +278,39 @@ static esp_err_t open_door_post(httpd_req_t *req)
     return ESP_OK;
 }
 #endif
+
+/* POST /homekit/reset-pairings : efface les appairages HomeKit (pas le Wi-Fi) puis redemarre, pour
+ * re-appairer sans acces au bouton BOOT. Le SDK efface et redemarre lui-meme (~2 s). */
+static esp_err_t hk_reset_post(httpd_req_t *req)
+{
+    if (!check_auth(req)) {
+        return ESP_FAIL;
+    }
+    if (!drain_body(req)) {
+        return ESP_FAIL;
+    }
+    if (s_in_progress) {
+        return reply_close(req, "409 Conflict", "ota in progress\n");
+    }
+    {
+        /* image encore en auto-test : le redemarrage du SDK annulerait la mise a jour (rollback) */
+        const esp_partition_t *run = esp_ota_get_running_partition();
+        esp_ota_img_states_t st;
+        if (run && esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY) {
+            return reply_close(req, "409 Conflict", "self-test pending\n");
+        }
+    }
+    esp_err_t e = app_homekit_reset_pairings();
+    if (e == ESP_ERR_INVALID_STATE) {
+        return reply_close(req, "503 Service Unavailable", "homekit not started\n");
+    }
+    if (e != ESP_OK) {
+        return reply_close(req, "500 Internal Server Error", "reset failed\n");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"status\":\"resetting\",\"reboot_in_ms\":2000}\n");
+    return ESP_OK;
+}
 
 /* Fin d'une OTA. reboot=true : la reponse 200 est envoyee et le redemarrage est programme.
  * reboot=false : echec, on libere le bus et on previent app_net (arret differe du SoftAP). */
@@ -405,18 +455,20 @@ void app_ota_start(void)
     httpd_register_uri_handler(s_server, &reboot);
     const httpd_uri_t ota = { .uri = "/ota", .method = HTTP_POST, .handler = ota_post };
     httpd_register_uri_handler(s_server, &ota);
+    const httpd_uri_t hk_reset = { .uri = "/homekit/reset-pairings", .method = HTTP_POST, .handler = hk_reset_post };
+    httpd_register_uri_handler(s_server, &hk_reset);
 #if CONFIG_TC_BUS_TX_ENABLE
-    /* 4 gestionnaires sur max_uri_handlers = 8 (HTTPD_DEFAULT_CONFIG) */
+    /* 5 gestionnaires sur max_uri_handlers = 8 (HTTPD_DEFAULT_CONFIG) */
     const httpd_uri_t open_door = { .uri = "/bus/open-door", .method = HTTP_POST, .handler = open_door_post };
     e = httpd_register_uri_handler(s_server, &open_door);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "enregistrement de /bus/open-door: %s", esp_err_to_name(e));
     }
     s_running = true;
-    ESP_LOGI(TAG, "serveur HTTP sur le port %d (/info, /ota, /reboot, /bus/open-door)", CONFIG_APP_HTTP_PORT);
+    ESP_LOGI(TAG, "serveur HTTP sur le port %d (/info, /ota, /reboot, /homekit/reset-pairings, /bus/open-door)", CONFIG_APP_HTTP_PORT);
 #else
     s_running = true;
-    ESP_LOGI(TAG, "serveur HTTP sur le port %d (/info, /ota, /reboot)", CONFIG_APP_HTTP_PORT);
+    ESP_LOGI(TAG, "serveur HTTP sur le port %d (/info, /ota, /reboot, /homekit/reset-pairings)", CONFIG_APP_HTTP_PORT);
 #endif
 }
 

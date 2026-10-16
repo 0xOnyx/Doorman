@@ -9,6 +9,7 @@
 #include "app_ota.h"
 #include "netlog.h"
 #include "tc_bus.h"
+#include "app_homekit.h"
 
 static const char *TAG = "selftest";
 
@@ -35,6 +36,9 @@ static const char *missing_condition(void)
     }
     if (!tc_bus_is_running()) {
         return "tache bus absente";
+    }
+    if (!app_homekit_is_started()) {
+        return "HomeKit non demarre";
     }
     return NULL;
 }

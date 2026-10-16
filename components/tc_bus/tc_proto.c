@@ -425,6 +425,20 @@ bool tc_proto_is_for_me(const tc_telegram_t *t, uint32_t my_serial, uint8_t door
     }
 }
 
+bool tc_proto_is_ring_for_me(const tc_telegram_t *t, uint32_t my_serial)
+{
+    if (t == NULL || my_serial == 0 || t->is_response || !t->is_long) {
+        return false;
+    }
+    switch (t->type) {
+    case TC_TYPE_DOOR_CALL:
+    case TC_TYPE_FLOOR_CALL:
+        return t->serial == my_serial;
+    default:
+        return false;
+    }
+}
+
 size_t tc_proto_rmt_words_to_segments(const uint32_t *words, size_t nwords, tc_segment_t *out, size_t max)
 {
     size_t k = 0;

@@ -4,9 +4,10 @@ Ce guide explique comment se servir de l'interphone une fois le premier flash US
 (voir le README, section « Flasher la carte »). À partir de là, **tout passe par le réseau** :
 logs, état, mises à jour et redémarrage.
 
-État actuel : **phase 2**. La carte écoute le bus et journalise chaque télégramme ; une image
+État actuel : **phase 3**. La carte écoute le bus et journalise chaque télégramme ; une image
 compilée avec l'émission (`TC_BUS_TX_ENABLE`) sait aussi ouvrir la porte de l'immeuble sur commande
-(section 8). HomeKit n'est pas encore là (phase 3, livrée par OTA).
+(section 8). Elle est un accessoire **HomeKit** (section 9) : notification quand on sonne, ouverture
+de la porte depuis l'app Maison ou Siri.
 
 ---
 
@@ -95,7 +96,8 @@ Exemple de réponse :
         "floor_call":1,"open_door":2,"open_door_long":0,"light":1,"unknown":4,
         "last_raw":"0x1100","last_type":"OPEN_DOOR","last_age_s":12},
  "tx":{"enabled":true,"form":"long","raw":"0x14DEF480","sent":1,"echo":1,"reply":1,"refused":0,
-       "last_age_s":300}}
+       "last_age_s":300},
+ "homekit":{"started":true,"paired":1}}
 ```
 
 | Champ | À surveiller |
@@ -110,6 +112,7 @@ Exemple de réponse :
 | `rx_gpio` / `rx_mv` | Broche de réception et dernière tension mesurée dessus, en mV : ~2950 au repos. `-1` si inconnue (récepteur RMT) |
 | `bus` | Activité du bus depuis le démarrage, détaillée en section 7 |
 | `tx` | Émission : `{"enabled":false}` si l'image ne la compile pas ; sinon détaillée en section 8 |
+| `homekit` | `started` : accessoire HomeKit démarré ; `paired` : nombre d'appareils Apple appairés (0 = pas encore ajouté dans Maison). Section 9 |
 
 Réponses d'erreur : `401 unauthorized` (token absent ou faux), `503` (la carte a été compilée
 sans token valide, ce que le build refuse désormais).
@@ -188,7 +191,7 @@ Cas typiques : nouvelle box, mot de passe Wi-Fi changé.
 Pendant ce temps la carte continue d'essayer la box (au plus toutes les 60 s) : chaque essai
 coupe la radio 1 à 2 s, une petite pause dans les logs est normale.
 
-Si le point d'accès de secours n'apparaît jamais : il ne reste que l'USB (section 10).
+Si le point d'accès de secours n'apparaît jamais : il ne reste que l'USB (section 11).
 
 ---
 
@@ -342,20 +345,112 @@ la réponse de la centrale est suivie de `(reponse a notre emission)`.
 
 ---
 
-## 9. Ce que la carte fait toute seule
+## 9. HomeKit (phase 3)
+
+La carte est un accessoire HomeKit autonome (catégorie « serrure », sans pont ni Matter) avec deux
+services :
+
+- **Sonnette** : quand on sonne chez toi (platine de rue `DOOR_CALL` ou sonnette du palier
+  `FLOOR_CALL` portant ton numéro de série), l'iPhone reçoit la notification « Quelqu'un sonne ».
+  Une notification au plus toutes les 5 s (un appel peut être répété sur le bus). Il faut que
+  `TC_BUS_MY_SERIAL` soit renseigné (section 7).
+- **Serrure « Porte »** : « Déverrouiller » dans Maison (ou « Dis Siri, déverrouille la porte »)
+  émet le télégramme d'ouverture (section 8, mêmes garde-fous). La serrure s'affiche
+  **déverrouillée** 5 s puis se reverrouille seule. Si l'émission est refusée (bus occupé,
+  ouverture déjà émise il y a moins de 3 s, OTA en cours...), elle s'affiche **bloquée** 3 s puis
+  revient à « verrouillée » ; la raison est dans les logs. Il faut une image compilée avec
+  l'émission (`TC_BUS_TX_ENABLE`), sinon la serrure passe toujours par « bloquée ».
+
+### Choisir le code d'appairage
+
+`idf.py menuconfig` → **Interphone** → **HomeKit** :
+
+| Option | Valeur |
+|---|---|
+| Code d'appairage | 8 chiffres au format `XXX-XX-XXX`, par exemple tiré au hasard : `python3 -c "import secrets; d=f'{secrets.randbelow(10**8):08d}'; print(f'{d[:3]}-{d[3:5]}-{d[5:]}')"` |
+| Setup ID | 4 caractères parmi `0-9` et `A-Z` (majuscules), par exemple `K7QP` |
+| Nom de l'accessoire | Le nom affiché dans Maison (par défaut `Interphone`) |
+
+La compilation **refuse** un code vide, mal formé ou trivial (`000-00-000` … `999-99-999`,
+`123-45-678`, `876-54-321`), avec par exemple :
+
+```
+main/app_config_check.c:30:1: error: static assertion failed: "APP_HK_SETUP_CODE vide : renseigner menuconfig > Interphone > HomeKit"
+main/hk_config_check.cpp:11:34: error: static assertion failed: APP_HK_SETUP_CODE invalide : format XXX-XX-XXX (chiffres), ...
+```
+
+Le code n'apparaît jamais dans les logs ni dans `/info`. Il est dans `sdkconfig` : à garder pour
+soi comme les autres secrets (section 12). Changer le code plus tard n'oblige pas à ré-appairer.
+
+### Ajouter l'accessoire dans Maison
+
+1. Installer l'image par OTA (section 4) ; l'iPhone doit être sur le **même réseau Wi-Fi** que la carte.
+2. App **Maison** → **+** → **Ajouter un accessoire** → **Autres options…** → choisir
+   **Interphone** dans la liste → saisir le code d'appairage.
+3. Message **« Accessoire non certifié »** : normal (firmware personnel, non certifié par Apple) →
+   **Ajouter quand même**.
+4. Choisir la pièce, nommer les services, activer les notifications de la sonnette.
+
+Dans les logs : `homekit: controleur ajoute : appaire (1)`. `/info` montre alors
+`"homekit":{"started":true,"paired":1}`.
+
+**Notifications hors de chez toi** et commande à distance : il faut un **concentrateur
+domestique** (Apple TV ou HomePod) dans le logement ; sans lui, HomeKit ne fonctionne que sur le
+Wi-Fi de la maison.
+
+Si l'accessoire n'apparaît pas dans la liste : il n'est proposé que s'il n'est pas déjà appairé
+(sinon voir ci-dessous) ; le mode appairage est réactivé automatiquement toutes les 10 min.
+
+### Lignes de log HomeKit
+
+```
+homekit: HomeKit demarre (serveur HAP port 80, 'Interphone', fw 0.3.0)
+homekit: etat : non appaire
+homekit: appairage commence
+homekit: controleur ajoute : appaire (1)
+homekit: sonnerie DOOR_CALL : notification HomeKit envoyee
+homekit: ouverture demandee depuis HomeKit
+homekit: porte ouverte depuis HomeKit (0x14DEF480, echo oui, reponse oui)
+homekit: ouverture depuis HomeKit refusee : bus_busy
+```
+
+`appairage abandonne (code faux ou inactivite)` : le code saisi ne correspond pas.
+
+### Réinitialiser les appairages
+
+Pour retirer l'accessoire de tous les iPhone et pouvoir le ré-ajouter (par exemple après l'avoir
+supprimé de Maison sans que la carte le sache, ou pour l'ajouter à un autre domicile) :
+
+```bash
+curl -X POST -H "Authorization: Bearer $OTA_TOKEN" http://interphone.local:8080/homekit/reset-pairings
+```
+
+Réponse `200 {"status":"resetting","reboot_in_ms":2000}` : la carte efface ses appairages HomeKit
+(le Wi-Fi et le reste de la configuration ne sont pas touchés) puis redémarre. Supprimer ensuite
+l'accessoire dans Maison s'il y figure encore, puis le ré-ajouter. `503 homekit not started` si
+HomeKit n'a pas démarré, `409` pendant une OTA.
+
+Les appairages sont conservés en mémoire (NVS) à travers les OTA et les coupures de courant.
+
+---
+
+## 10. Ce que la carte fait toute seule
 
 - **Rollback** : une nouvelle version qui n'obtient pas le réseau, le serveur de logs, le
-  serveur HTTP et la réception du bus en 90 s est rejetée ; la carte redémarre sur la précédente.
+  serveur HTTP, la réception du bus et HomeKit en 90 s est rejetée ; la carte redémarre sur la précédente.
   Même chose si elle plante ou si le courant est coupé avant sa validation.
 - **Reconnexion Wi-Fi** : automatique, sans jamais redémarrer pour ça.
 - **Santé** : si le serveur HTTP ou le serveur de logs meurt, ou s'il n'y a plus aucun accès
   réseau (ni box ni secours) pendant 15 min, la carte redémarre d'elle-même.
 - **Bus** : la carte n'émet jamais rien d'elle-même. Sans l'émission compilée, la sortie GPIO8
-  reste à 0 ; avec, elle n'émet que sur `POST /bus/open-door` (section 8).
+  reste à 0 ; avec, elle n'émet que sur `POST /bus/open-door` (section 8) ou sur une demande
+  d'ouverture HomeKit (section 9), avec les mêmes garde-fous.
+- **HomeKit** : le mode appairage, coupé par le SDK après 10 min sans appairage, est réactivé
+  automatiquement tant que l'accessoire n'est pas appairé.
 
 ---
 
-## 10. Dernier recours : l'USB
+## 11. Dernier recours : l'USB
 
 Si plus rien ne répond (ni `interphone.local`, ni le point d'accès de secours après 10 min) :
 
@@ -366,7 +461,7 @@ Si plus rien ne répond (ni `interphone.local`, ni le point d'accès de secours 
 
 ---
 
-## 11. À sauvegarder hors du PC
+## 12. À sauvegarder hors du PC
 
 | Fichier | Pourquoi |
 |---|---|

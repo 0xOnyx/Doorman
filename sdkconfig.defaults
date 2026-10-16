@@ -27,7 +27,8 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_COLORS=n
 
 # Reseau
-CONFIG_LWIP_MAX_SOCKETS=16
+# 24 : serveur HAP 8 (+ ecoute et controle), OTA/info 4 (+ ecoute et controle), logs 2, mDNS, DHCP, marge
+CONFIG_LWIP_MAX_SOCKETS=24
 CONFIG_LWIP_SO_REUSE=y
 CONFIG_MBEDTLS_HARDWARE_MPI=y
 
@@ -48,3 +49,7 @@ CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y
 # Emission sur le bus (phase 2) : jamais activee par defaut. A activer dans menuconfig
 # (Bus TC > Compiler l'emission) seulement pour l'image qui doit ouvrir la porte.
 # CONFIG_TC_BUS_TX_ENABLE is not set
+
+# HomeKit (phase 3) : le minuteur du mode appairage du SDK (10 min) s'execute dans la tache des
+# minuteurs FreeRTOS (de-annonce mDNS, printf, evenement) : 2048 octets par defaut, trop juste.
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096

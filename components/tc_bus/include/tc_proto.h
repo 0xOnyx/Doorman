@@ -113,6 +113,14 @@ bool tc_proto_tx_allowed(const tc_telegram_t *t);
  * car un OPEN_DOOR court ne porte pas de numero de serie. */
 bool tc_proto_is_for_me(const tc_telegram_t *t, uint32_t my_serial, uint8_t door_address, bool recent_call_for_me);
 
+/* Sonnette HomeKit : quelqu'un sonne-t-il chez my_serial ? Predicat strict, distinct de
+ * tc_proto_is_for_me (repere de log, volontairement large). Vrai seulement pour DOOR_CALL (platine
+ * de rue) et FLOOR_CALL (sonnette paliere) qui ne sont pas des reponses, dont serial == my_serial,
+ * avec my_serial != 0. Jamais pour INTERNAL_CALL (sens du numero non verifie), START_TALKING,
+ * CONTROL_FUNCTION, OPEN_DOOR_LONG, REQUEST_VERSION (nos propres actions portent notre numero).
+ * L'echo de nos emissions n'est pas transmis au rappel de tc_bus et ne passe donc jamais ici. */
+bool tc_proto_is_ring_for_me(const tc_telegram_t *t, uint32_t my_serial);
+
 /* Convertit des mots rmt_symbol_word_t (passes en uint32_t : duration0 bits 0-14, level0 bit 15,
  * duration1 bits 16-30, level1 bit 31) en segments. Une duree nulle termine la trame ;
  * mark = (level == 0) (bus bas = GPIO RX a 0). Ecrit au plus max segments, renvoie leur nombre. */

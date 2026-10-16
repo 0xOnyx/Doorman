@@ -552,6 +552,90 @@ static void test_is_for_me(void)
     CHECK(!tc_proto_is_for_me(NULL, 0xC30BA, 0, true));
 }
 
+/* --- sonnette HomeKit : appel pour moi, strict --- */
+static void test_is_ring_for_me(void)
+{
+    /* vecteurs reels du bus de l'immeuble (2026-10-16) : sonnettes palieres des voisins */
+    {
+        tc_telegram_t v = cls(0x14DF3A41, true, false);
+        CHECK_EQ(v.type, TC_TYPE_FLOOR_CALL);
+        CHECK(!tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x14DF3941, true, false);
+        CHECK(!tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x14DEF441, true, false);           /* ma sonnette paliere */
+        CHECK(tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x04DEF480, true, false);           /* appel de la platine de rue vers moi */
+        CHECK_EQ(v.type, TC_TYPE_DOOR_CALL);
+        CHECK(tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x14DEF480, true, false);           /* mon ouverture : jamais une sonnerie */
+        CHECK(!tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x34DEF400, true, false);           /* START_TALKING pour moi : jamais une sonnerie */
+        CHECK(!tc_proto_is_ring_for_me(&v, 0x4DEF4));
+    }
+
+    /* DOOR_CALL (platine de rue, bit 6 = 0) et FLOOR_CALL (sonnette paliere) avec mon numero */
+    static const struct { uint32_t raw; tc_type_t type; } rings[] = {
+        { 0x0C30BA80, TC_TYPE_DOOR_CALL },
+        { 0x0C30BA00, TC_TYPE_DOOR_CALL },
+        { 0x0C30BA01, TC_TYPE_DOOR_CALL },     /* autre platine (adresse 1) */
+        { 0x1C30BA41, TC_TYPE_FLOOR_CALL },
+    };
+    for (size_t i = 0; i < sizeof rings / sizeof rings[0]; i++) {
+        tc_telegram_t t = cls(rings[i].raw, true, false);
+        CHECK_EQ(t.type, rings[i].type);
+        CHECK(tc_proto_is_ring_for_me(&t, 0xC30BA));
+        CHECK(!tc_proto_is_ring_for_me(&t, 0xC30BB));          /* mauvais numero */
+        CHECK(!tc_proto_is_ring_for_me(&t, 0x00001));
+        CHECK(!tc_proto_is_ring_for_me(&t, 0));                /* numero non configure */
+        /* une reponse (depart long) n'est jamais une sonnerie */
+        tc_telegram_t r = cls(rings[i].raw, true, true);
+        CHECK(!tc_proto_is_ring_for_me(&r, 0xC30BA));
+    }
+
+    /* numero 0 sur le bus et numero non configure : jamais */
+    tc_telegram_t z = cls(0x00000080, true, false);
+    CHECK_EQ(z.type, TC_TYPE_DOOR_CALL);
+    CHECK_EQ(z.serial, 0);
+    CHECK(!tc_proto_is_ring_for_me(&z, 0));
+
+    /* mon numero mais pas une sonnerie : mes propres actions et l'appel interne */
+    static const struct { uint32_t raw; tc_type_t type; } not_rings[] = {
+        { 0x0C30BA43, TC_TYPE_INTERNAL_CALL },     /* sens du numero non verifie */
+        { 0x3C30BA80, TC_TYPE_START_TALKING },
+        { 0x6C30BA08, TC_TYPE_CONTROL_FUNCTION },
+        { 0x1C30BA80, TC_TYPE_OPEN_DOOR_LONG },
+        { 0x14DEF480, TC_TYPE_OPEN_DOOR_LONG },
+        { 0x5C30BAC0, TC_TYPE_REQUEST_VERSION },
+        { 0x810C30BA, TC_TYPE_SELECT_MEMORY_PAGE },
+        { 0xFC30BA00, TC_TYPE_UNKNOWN },
+    };
+    for (size_t i = 0; i < sizeof not_rings / sizeof not_rings[0]; i++) {
+        tc_telegram_t t = cls(not_rings[i].raw, true, false);
+        CHECK_EQ(t.type, not_rings[i].type);
+        CHECK(!tc_proto_is_ring_for_me(&t, 0xC30BA));
+        CHECK(!tc_proto_is_ring_for_me(&t, 0x4DEF4));
+    }
+
+    /* trames courtes : jamais (OPEN_DOOR, LIGHT, DOOR_OPENED, ACK...) */
+    static const uint16_t shorts[] = { 0x1100, 0x1180, 0x1200, 0x2100, 0x2200, 0x3080 };
+    for (size_t i = 0; i < sizeof shorts / sizeof shorts[0]; i++) {
+        tc_telegram_t t = cls(shorts[i], false, false);
+        CHECK(!tc_proto_is_ring_for_me(&t, 0xC30BA));
+        CHECK(!tc_proto_is_ring_for_me(&t, 0x00000));
+    }
+    tc_telegram_t a = cls(0x1, false, true);
+    CHECK_EQ(a.type, TC_TYPE_ACK);
+    CHECK(!tc_proto_is_ring_for_me(&a, 0xC30BA));
+
+    /* type force a la main sans reclassement : le predicat se fie au champ type */
+    tc_telegram_t f = cls(0x0C30BA80, true, false);
+    f.serial = 0xC30BA;
+    f.type = TC_TYPE_INTERNAL_CALL;
+    CHECK(!tc_proto_is_ring_for_me(&f, 0xC30BA));
+
+    CHECK(!tc_proto_is_ring_for_me(NULL, 0xC30BA));
+}
+
 /* --- conversion des mots RMT --- */
 /* Disposition rmt_symbol_word_t : duration0 bits 0-14, level0 bit 15, duration1 bits 16-30, level1 bit 31. */
 static uint32_t word(uint16_t d0, unsigned l0, uint16_t d1, unsigned l1)
@@ -715,6 +799,7 @@ int main(void)
     RUN(test_names);
     RUN(test_next_frame);
     RUN(test_is_for_me);
+    RUN(test_is_ring_for_me);
     RUN(test_rmt_words_basic);
     RUN(test_rmt_words_max);
     RUN(test_rmt_words_roundtrip);

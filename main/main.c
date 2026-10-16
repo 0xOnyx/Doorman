@@ -16,6 +16,7 @@
 #include "app_ota.h"
 #include "tc_bus.h"
 #include "app_selftest.h"
+#include "app_homekit.h"
 
 /* Broches interdites pour le bus (spec 2.1, amendement ESP32-S3) : strapping 0/3/45/46, USB-Serial-JTAG
    19/20, UART0 43/44, flash et PSRAM du boitier 26-32 ; 22-25 n'existent pas. 33-37 restent libres avec
@@ -66,10 +67,12 @@ static void nvs_init(void)
     }
 }
 
-/* Phase 0 : tc_bus logge deja chaque telegramme. Les phases suivantes brancheront HomeKit ici. */
+/* Tache de reception tc_bus (qui logge deja chaque telegramme ; l'echo de nos emissions n'arrive
+ * pas ici) : la sonnette HomeKit, non bloquante. */
 static void on_telegram(const tc_telegram_t *t, void *ctx)
 {
-    (void)t; (void)ctx;
+    (void)ctx;
+    app_homekit_on_telegram(t);
 }
 
 #define HEALTH_PERIOD_S   30                /* periode interne du battement de coeur */
@@ -87,14 +90,18 @@ static void heartbeat_log(void)
 {
     tc_bus_stats_t s;
     tc_bus_get_stats(&s);
-    ESP_LOGI(TAG, "HB up=%llds heap=%" PRIu32 " min_heap=%" PRIu32 " rssi=%d net=%s bus_ok=%" PRIu32 " bus_err=%" PRIu32,
+    ESP_LOGI(TAG, "HB up=%llds heap=%" PRIu32 " min_heap=%" PRIu32 " rssi=%d net=%s bus_ok=%" PRIu32 " bus_err=%" PRIu32
+             " hk=%s paired=%d",
              (long long)(esp_timer_get_time() / 1000000), esp_get_free_heap_size(),
              esp_get_minimum_free_heap_size(), app_net_rssi(),
              app_net_recovery_ap_active() ? "recovery" : (app_net_is_connected() ? "sta" : "down"),
-             s.frames_ok, s.frames_err);
-    ESP_LOGI(TAG, "HB pile libre (octets) sys_evt=%ld tc_rx=%ld netlog=%ld httpd=%ld esp_timer=%ld main=%ld tiT=%ld",
+             s.frames_ok, s.frames_err, app_homekit_is_started() ? "on" : "off", app_homekit_paired_count());
+    /* "httpd" : premiere tache de ce nom trouvee (serveur 8080 ou serveur HAP, meme nom) */
+    ESP_LOGI(TAG, "HB pile libre (octets) sys_evt=%ld tc_rx=%ld netlog=%ld httpd=%ld esp_timer=%ld main=%ld tiT=%ld"
+             " hk_lock=%ld hap-loop=%ld Tmr=%ld",
              stack_hwm("sys_evt"), stack_hwm("tc_rx"), stack_hwm("netlog"), stack_hwm("httpd"),
-             stack_hwm("esp_timer"), stack_hwm("main"), stack_hwm("tiT"));
+             stack_hwm("esp_timer"), stack_hwm("main"), stack_hwm("tiT"),
+             stack_hwm("hk_lock"), stack_hwm("hap-loop"), stack_hwm("Tmr Svc"));
 }
 #endif
 
@@ -169,6 +176,13 @@ void app_main(void)
        attendu RX sans pull (analogique avec le recepteur ADC : entree numerique coupee), TX sortie
        a 0 (avec l'emission compilee : signal du canal RMT, repos a 0). Ecrit sur stdout : console seulement, pas dans les logs reseau. */
     gpio_dump_io_configuration(stdout, (1ULL << CONFIG_TC_BUS_RX_GPIO) | (1ULL << CONFIG_TC_BUS_TX_GPIO));
+    /* apres le Wi-Fi (le SDK lit la MAC) et le bus ; un echec laisse tourner le reste, l'auto-test
+       echoue alors et une nouvelle image est annulee */
+    if (app_homekit_start() != ESP_OK) {
+        ESP_LOGE(TAG, "HomeKit non demarre");
+    }
+    ESP_LOGI(TAG, "heap apres demarrage %" PRIu32 " (min %" PRIu32 ")", esp_get_free_heap_size(),
+             esp_get_minimum_free_heap_size());
     app_selftest_start();
 
     /* Battement de coeur : controles de sante toutes les 30 s, log toutes les APP_HEARTBEAT_S
