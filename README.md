@@ -4,7 +4,7 @@ Firmware ESP-IDF pour ESP32-S3 (ESP32-S3FH4R2 : 2 cœurs, 4 Mo de flash, 2 Mo de
 
 Guide d'utilisation complet : `docs/utilisation.md`
 
-**État : phase 2** (socle distant, sniffer du bus, ouverture de la porte par `POST /bus/open-door` quand l'émission est compilée). HomeKit arrivera par OTA dans les phases suivantes. Voir `docs/roadmap.md` et les spécifications dans `docs/superpowers/specs/`.
+**État : phase 3** (socle distant, sniffer du bus, ouverture de la porte par `POST /bus/open-door` quand l'émission est compilée, accessoire HomeKit : notification à la sonnerie et serrure « Porte » dans l'app Maison). Voir `docs/roadmap.md` et les spécifications dans `docs/superpowers/specs/`.
 
 ## Prérequis (Linux)
 
@@ -41,6 +41,18 @@ sudo apt install git wget flex bison gperf python3 python3-venv cmake ninja-buil
 mkdir -p ~/esp && cd ~/esp && git clone -b v5.5.5 --recursive https://github.com/espressif/esp-idf.git && cd esp-idf && ./install.sh esp32s3
 ```
 
+## Obtenir le code
+
+Le SDK HomeKit d'Espressif est un **sous-module Git** (`components/esp-homekit-sdk`, figé sur `676fabac`) :
+
+```bash
+git clone --recursive <url-du-depot> ~/CLionProjects/Doorman
+# depot deja clone sans --recursive, ou apres un git pull qui change le sous-module :
+git submodule update --init
+```
+
+Sans lui, la configuration CMake échoue (composants `esp_hap_core`, `esp_hap_apple_profiles` introuvables).
+
 ## Compiler le firmware
 
 1. Activer ESP-IDF et aller dans le projet :
@@ -59,7 +71,7 @@ mkdir -p ~/esp && cd ~/esp && git clone -b v5.5.5 --recursive https://github.com
    ```bash
    idf.py menuconfig
    ```
-   Menu **Interphone** : SSID et mot de passe du Wi-Fi 2,4 GHz, token OTA, mot de passe du SoftAP de secours. Navigation : flèches, Entrée pour ouvrir/modifier, Échap pour revenir ; `S` pour sauvegarder, `Q` pour quitter.
+   Menu **Interphone** : SSID et mot de passe du Wi-Fi 2,4 GHz, token OTA, mot de passe du SoftAP de secours, et sous-menu **HomeKit** : code d'appairage `XXX-XX-XXX` et setup ID (4 caractères `0-9`/`A-Z`), voir `docs/utilisation.md` section 9. Navigation : flèches, Entrée pour ouvrir/modifier, Échap pour revenir ; `S` pour sauvegarder, `Q` pour quitter.
 
    **La compilation refuse de continuer tant que ces secrets ne sont pas renseignés**, avec par exemple :
    ```
@@ -130,14 +142,15 @@ Ce flash USB n'a lieu **qu'une fois**. Ensuite, toutes les mises à jour passent
 6. Configuration (voir « Compiler le firmware », étapes 2 et 3) : `idf.py menuconfig` → **Interphone** :
    - SSID et mot de passe du Wi-Fi **2,4 GHz** ;
    - token OTA d'au moins 32 caractères, généré par `openssl rand -hex 24` ;
-   - mot de passe du SoftAP de secours (8 à 63 caractères).
+   - mot de passe du SoftAP de secours (8 à 63 caractères) ;
+   - sous-menu **HomeKit** : code d'appairage `XXX-XX-XXX` non trivial et setup ID (`docs/utilisation.md` section 9).
 
    **Sauvegarder aussi `sdkconfig` (il contient le token et les mots de passe) avec la clé de signature, hors du PC.**
 7. Compiler :
    ```bash
    idf.py build
    ```
-   Doit finir par `Project build complete.` Une erreur `APP_OTA_TOKEN < 32 caracteres` (ou `APP_WIFI_SSID vide`, `APP_RECOVERY_AP_PASSWORD`) signifie que `menuconfig` n'est pas rempli.
+   Doit finir par `Project build complete.` Une erreur `APP_OTA_TOKEN < 32 caracteres` (ou `APP_WIFI_SSID vide`, `APP_RECOVERY_AP_PASSWORD`, `APP_HK_SETUP_CODE`, `APP_HK_SETUP_ID`) signifie que `menuconfig` n'est pas rempli.
 8. Premier flash :
    ```bash
    idf.py -p /dev/ttyACM0 erase-flash flash monitor
@@ -203,6 +216,6 @@ Implémentation originale (MIT), fondée sur le travail de rétro-ingénierie de
 - Doorman (AzonInc, GPL-3.0) : https://github.com/AzonInc/Doorman
 - TCSintercomArduino (atc1441) : https://github.com/atc1441/TCSintercomArduino
 - peteh/doorman (GPL-3.0) : https://github.com/peteh/doorman
-- HomeKit : esp-homekit-sdk (Espressif) : https://github.com/espressif/esp-homekit-sdk
+- HomeKit : esp-homekit-sdk (Espressif, licence « Espressif MIT », usage personnel non commercial ; l'app Maison affiche « Accessoire non certifié ») : https://github.com/espressif/esp-homekit-sdk
 
 Licence : MIT (voir `LICENSE`).
