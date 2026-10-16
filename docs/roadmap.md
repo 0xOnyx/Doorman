@@ -40,3 +40,11 @@ par les logs réseau (`tools/logs.py`).
 - Cahier des charges de l'utilisateur (document de contexte, 2026-10-13).
 - Spec phase 0 : `docs/superpowers/specs/2026-10-13-phase0-socle-distant-design.md`
   (sa section 15 liste les pièges du SDK HomeKit déjà identifiés pour la phase 3).
+
+## Note pour la phase 3 (issue de la relecture de la phase 1)
+
+La sonnette HomeKit ne doit pas utiliser `tc_proto_is_for_me` (repère de log, volontairement large :
+`START_TALKING`, `CONTROL_FUNCTION`, `OPEN_DOOR_LONG` portent aussi mon numéro lors de mes propres actions).
+Prévoir un prédicat strict `tc_proto_is_ring_for_me` : `DOOR_CALL` (et `FLOOR_CALL`, sonnette palière) avec mon
+numéro ; `INTERNAL_CALL` seulement après avoir vérifié sur le bus si le numéro désigne l'appelé ou l'appelant ;
+anti-rebond si un `DOOR_CALL` est répété.

@@ -401,3 +401,90 @@ bool tc_proto_tx_allowed(const tc_telegram_t *t)
         return false;
     }
 }
+
+/* --- "pour moi" et conversion RMT --- */
+bool tc_proto_is_for_me(const tc_telegram_t *t, uint32_t my_serial, uint8_t door_address, bool recent_call_for_me)
+{
+    if (t == NULL || my_serial == 0) {
+        return false;
+    }
+    switch (t->type) {
+    case TC_TYPE_DOOR_CALL:
+    case TC_TYPE_INTERNAL_CALL:
+    case TC_TYPE_FLOOR_CALL:
+    case TC_TYPE_START_TALKING:
+    case TC_TYPE_CONTROL_FUNCTION:
+    case TC_TYPE_OPEN_DOOR_LONG:
+    case TC_TYPE_REQUEST_VERSION:
+        return t->serial == my_serial;
+    case TC_TYPE_OPEN_DOOR:
+        /* sans numero de serie : seulement juste apres un appel pour moi */
+        return recent_call_for_me && t->address == door_address;
+    default:
+        return false;
+    }
+}
+
+size_t tc_proto_rmt_words_to_segments(const uint32_t *words, size_t nwords, tc_segment_t *out, size_t max)
+{
+    size_t k = 0;
+    if (words == NULL || out == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < nwords; i++) {
+        uint32_t w = words[i];
+        for (unsigned half = 0; half < 2; half++) {
+            uint16_t d = (uint16_t)((w >> (16u * half)) & 0x7FFFu);
+            unsigned level = (unsigned)(w >> (16u * half + 15u)) & 1u;
+            if (d == 0 || k >= max) {
+                return k;            /* duree nulle = fin de trame */
+            }
+            out[k].duration_us = d;
+            out[k].mark = (level == 0);   /* bus bas = GPIO RX a 0 */
+            k++;
+        }
+    }
+    return k;
+}
+
+static bool is_start(uint16_t d, bool *is_ack)
+{
+    if (d >= TC_START_CMD_MIN_US && d <= TC_START_CMD_MAX_US) {
+        *is_ack = false;
+        return true;
+    }
+    if (d >= TC_START_ACK_MIN_US && d <= TC_START_ACK_MAX_US) {
+        *is_ack = true;
+        return true;
+    }
+    return false;
+}
+
+bool tc_proto_next_frame(const tc_segment_t *segs, size_t n, size_t *pos, size_t *start, size_t *len)
+{
+    if (segs == NULL || pos == NULL || start == NULL || len == NULL) {
+        return false;
+    }
+    for (size_t i = *pos; i + 1 < n; i++) {
+        bool is_ack;
+        if (!is_start(segs[i].duration_us, &is_ack)) {
+            continue;
+        }
+        bool len_bit = segs[i + 1].duration_us >= TC_BIT1_MIN_US && segs[i + 1].duration_us <= TC_BIT1_MAX_US;
+        size_t want = len_bit ? TC_SEGMENTS_LONG : (is_ack ? TC_SEGMENTS_ACK : TC_SEGMENTS_SHORT);
+        if (i + want > n) {
+            /* un ACK court peut aussi demarrer en fenetre commande : essayer 7 si 19 ne tient pas */
+            if (!len_bit && i + TC_SEGMENTS_ACK <= n) {
+                want = TC_SEGMENTS_ACK;
+            } else {
+                break;
+            }
+        }
+        *start = i;
+        *len = want;
+        *pos = i + want;
+        return true;
+    }
+    *pos = n;
+    return false;
+}

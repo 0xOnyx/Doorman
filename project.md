@@ -1,5 +1,10 @@
 # Interphone Koch TC:Bus → HomeKit (ESP32-C3, ESP-IDF, C)
 
+> **Note (2026-10-13) : la cible est désormais l'ESP32-S3** (ESP32-S3FH4R2), et non plus l'ESP32-C3.
+> Les écarts qui en découlent (target, GPIO, mémoire RMT, secure boot) sont décrits dans
+> l'[amendement en tête de la spec de phase 0](docs/superpowers/specs/2026-10-13-phase0-socle-distant-design.md#amendement-2026-10-13--cible-esp32-s3).
+> Le reste de ce cahier des charges n'est pas réécrit : là où il dit « C3 », lire « S3 » selon l'amendement.
+
 > **Document de contexte pour Claude Code.**
 > Il décrit le matériel, le protocole du bus et l'architecture attendue pour écrire,
 > **from scratch et en C pur**, un firmware ESP-IDF qui relie un interphone Koch TC:Bus

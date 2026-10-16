@@ -2,16 +2,90 @@ menu "Bus TC (tc_bus)"
     config TC_BUS_RX_GPIO
         int "GPIO de reception (diviseur)"
         range 0 48
-        default 4
+        default 9
     config TC_BUS_TX_GPIO
         int "GPIO d'emission (base du transistor)"
         range 0 48
-        default 10
+        default 8
+    choice TC_BUS_RX
+        prompt "Recepteur du bus"
+        default TC_BUS_RX_ADC
+        help
+            Le bus installe ne descend qu'a ~0.86 V sur la broche RX (repos 2.94 a 2.98 V, diviseur
+            1 MOhm / 147 kOhm) : l'entree numerique ne voit pas ces bas de facon fiable, le
+            recepteur analogique (ADC) si.
+        config TC_BUS_RX_ADC
+            bool "ADC continu (analogique, seuils logiciels avec hysteresis)"
+        config TC_BUS_RX_RMT
+            bool "RMT (entree numerique)"
+    endchoice
+    config TC_BUS_ADC_LOW_MV
+        int "Seuil de passage a bas (mV sur la broche RX)"
+        depends on TC_BUS_RX_ADC
+        range 200 3000
+        default 1700
+        help
+            Le bus est vu "bas" (mark) quand la broche RX descend sous ce seuil. Mesure sur la
+            carte installee : repos 2940 a 2980 mV, point le plus bas d'un telegramme 860 mV.
+            Doit rester nettement au-dessus du bas mesure et sous TC_BUS_ADC_HIGH_MV.
+    config TC_BUS_ADC_HIGH_MV
+        int "Seuil de retour a haut (mV sur la broche RX)"
+        depends on TC_BUS_RX_ADC
+        range 200 3000
+        default 2100
+        help
+            Le bus redevient "haut" (repos) quand la broche RX remonte a ce seuil ou au-dessus.
+            Mesure : repos 2940 a 2980 mV, bas 860 mV. L'ecart avec TC_BUS_ADC_LOW_MV
+            (hysteresis) evite les fronts parasites dans le bruit ; il doit rester sous le repos.
+    config TC_BUS_ADC_SAMPLE_HZ
+        int "Cadence d'echantillonnage de l'ADC (Hz)"
+        depends on TC_BUS_RX_ADC
+        range 10000 40000
+        default 20000
+        help
+            20 kHz : un echantillon toutes les 50 us, largement assez pour des fenetres de bits
+            de +-1000 us et un depart de 5700 a 6089 us.
     config TC_BUS_TX_ENABLE
-        bool "Compiler l'emission (DOIT rester desactive en phase 0)"
+        bool "Compiler l'emission (ouverture de porte, phase 2)"
         default n
+        help
+            Compile l'emetteur RMT sur TC_BUS_TX_GPIO et POST /bus/open-door. Le bus est partage
+            par tout l'immeuble : seul le telegramme d'ouverture choisi ci-dessous peut etre emis,
+            avec les garde-fous (liste blanche, 200 ms entre deux emissions, 5 par minute, bus
+            calme depuis 200 ms, refus pendant une OTA et le SoftAP de secours). Desactive :
+            aucun code d'emission n'est compile, TX GPIO reste a 0.
+    choice TC_BUS_OPEN_FORM
+        prompt "Telegramme d'ouverture emis"
+        depends on TC_BUS_TX_ENABLE
+        default TC_BUS_OPEN_FORM_LONG
+        help
+            LONG : OPEN_DOOR_LONG (1 << 28) | serie << 8 | 0x80 | adresse, observe hors
+            communication (0x14DEF480 pour la serie 0x4DEF4, adresse 0). Exige TC_BUS_MY_SERIAL.
+            SHORT : OPEN_DOOR 0x1100 | adresse, observe pendant une communication.
+        config TC_BUS_OPEN_FORM_LONG
+            bool "Long (OPEN_DOOR_LONG, avec le numero de serie)"
+        config TC_BUS_OPEN_FORM_SHORT
+            bool "Court (OPEN_DOOR 0x1100 | adresse)"
+    endchoice
     config TC_BUS_GLITCH_US
         int "Segments plus courts que ceci sont des parasites (us)"
         range 100 2000
         default 1000
+    config TC_BUS_MY_SERIAL
+        hex "Numero de serie de la station interieure (20 bits)"
+        range 0x0 0xFFFFF
+        default 0x0
+        help
+            Numero de serie 20 bits (0x00000..0xFFFFF) de la station interieure de l'appartement.
+            Les telegrammes qui la concernent sont marques "<< POUR MOI" dans les logs et comptes
+            dans /info. 0 = inconnu : aucun repere. Pour le relever, sonner depuis la platine
+            et lire le champ serial du DOOR_CALL (docs/utilisation.md, section 7).
+    config TC_BUS_DOOR_ADDRESS
+        int "Adresse de la platine de rue (0..63)"
+        range 0 63
+        default 0
+        help
+            Adresse de la platine de rue. Un OPEN_DOOR court ne porte pas de numero de serie :
+            il n'est marque "pour moi" que s'il vise cette adresse et suit de moins de 3 minutes
+            un appel pour moi.
 endmenu

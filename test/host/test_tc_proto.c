@@ -496,12 +496,205 @@ static void test_whitelist(void)
     CHECK_EQ(bad, 0);
 }
 
+/* --- "pour moi" --- */
+static void test_is_for_me(void)
+{
+    static const struct { uint32_t raw; tc_type_t type; } mine[] = {
+        { 0x0C30BA80, TC_TYPE_DOOR_CALL },
+        { 0x0C30BA43, TC_TYPE_INTERNAL_CALL },
+        { 0x1C30BA41, TC_TYPE_FLOOR_CALL },
+        { 0x3C30BA80, TC_TYPE_START_TALKING },
+        { 0x6C30BA08, TC_TYPE_CONTROL_FUNCTION },
+        { 0x1C30BA80, TC_TYPE_OPEN_DOOR_LONG },
+        { 0x5C30BAC0, TC_TYPE_REQUEST_VERSION },
+    };
+    for (size_t i = 0; i < sizeof mine / sizeof mine[0]; i++) {
+        tc_telegram_t t = cls(mine[i].raw, true, false);
+        CHECK_EQ(t.type, mine[i].type);
+        CHECK(tc_proto_is_for_me(&t, 0xC30BA, 0, false));      /* bon numero */
+        CHECK(tc_proto_is_for_me(&t, 0xC30BA, 5, true));
+        CHECK(!tc_proto_is_for_me(&t, 0xC30BB, 0, false));     /* mauvais numero */
+        CHECK(!tc_proto_is_for_me(&t, 0x00001, 0, true));
+        CHECK(!tc_proto_is_for_me(&t, 0, 0, true));            /* numero non configure */
+    }
+
+    /* un numero de serie d'un autre type (memoire) ne compte pas */
+    tc_telegram_t t = cls(0x810C30BA, true, false);
+    CHECK_EQ(t.type, TC_TYPE_SELECT_MEMORY_PAGE);
+    CHECK(!tc_proto_is_for_me(&t, 0xC30BA, 0, true));
+
+    /* OPEN_DOOR court : bonne adresse ET appel recent pour moi */
+    t = cls(0x1100, false, false);
+    CHECK_EQ(t.type, TC_TYPE_OPEN_DOOR);
+    CHECK(tc_proto_is_for_me(&t, 0xC30BA, 0, true));
+    CHECK(!tc_proto_is_for_me(&t, 0xC30BA, 0, false));         /* pas d'appel recent */
+    CHECK(!tc_proto_is_for_me(&t, 0xC30BA, 3, true));          /* autre platine */
+    CHECK(!tc_proto_is_for_me(&t, 0, 0, true));                /* numero non configure */
+    t = cls(0x1103, false, false);
+    CHECK_EQ(t.address, 3);
+    CHECK(tc_proto_is_for_me(&t, 0xC30BA, 3, true));
+    CHECK(!tc_proto_is_for_me(&t, 0xC30BA, 0, true));
+
+    /* jamais pour moi : ACK, LIGHT, UNKNOWN (meme si le raw contient le numero) */
+    t = cls(0x1, false, true);
+    CHECK_EQ(t.type, TC_TYPE_ACK);
+    CHECK(!tc_proto_is_for_me(&t, 0xC30BA, 0, true));
+    t = cls(0x1200, false, false);
+    CHECK_EQ(t.type, TC_TYPE_LIGHT);
+    CHECK(!tc_proto_is_for_me(&t, 0xC30BA, 0, true));
+    t = cls(0x9ABCDEF0, true, false);
+    CHECK_EQ(t.type, TC_TYPE_UNKNOWN);
+    CHECK(!tc_proto_is_for_me(&t, 0xBCDEF, 0, true));
+    t = cls(0xFC30BA00, true, false);
+    CHECK_EQ(t.type, TC_TYPE_UNKNOWN);
+    CHECK(!tc_proto_is_for_me(&t, 0xC30BA, 0, true));
+
+    CHECK(!tc_proto_is_for_me(NULL, 0xC30BA, 0, true));
+}
+
+/* --- conversion des mots RMT --- */
+/* Disposition rmt_symbol_word_t : duration0 bits 0-14, level0 bit 15, duration1 bits 16-30, level1 bit 31. */
+static uint32_t word(uint16_t d0, unsigned l0, uint16_t d1, unsigned l1)
+{
+    return (uint32_t)(d0 & 0x7FFF) | ((uint32_t)(l0 & 1) << 15) |
+           ((uint32_t)(d1 & 0x7FFF) << 16) | ((uint32_t)(l1 & 1) << 31);
+}
+
+static void test_rmt_words_basic(void)
+{
+    tc_segment_t s[TC_MAX_SEGMENTS];
+    uint32_t w[3] = {
+        word(5985, 0, 2000, 1),       /* mark (niveau 0), space (niveau 1) */
+        word(4000, 0, 0x7FFF, 1),     /* duree maximale sur 15 bits */
+        word(1234, 1, 4321, 0),       /* niveaux inverses */
+    };
+    size_t n = tc_proto_rmt_words_to_segments(w, 3, s, TC_MAX_SEGMENTS);
+    CHECK_EQ(n, 6);
+    CHECK_EQ(s[0].duration_us, 5985); CHECK(s[0].mark);
+    CHECK_EQ(s[1].duration_us, 2000); CHECK(!s[1].mark);
+    CHECK_EQ(s[2].duration_us, 4000); CHECK(s[2].mark);
+    CHECK_EQ(s[3].duration_us, 0x7FFF); CHECK(!s[3].mark);
+    CHECK_EQ(s[4].duration_us, 1234); CHECK(!s[4].mark);
+    CHECK_EQ(s[5].duration_us, 4321); CHECK(s[5].mark);
+
+    /* duree nulle en seconde moitie : fin de trame, mots suivants ignores */
+    uint32_t w2[3] = { word(5985, 0, 2000, 1), word(4000, 0, 0, 1), word(1000, 0, 1000, 1) };
+    n = tc_proto_rmt_words_to_segments(w2, 3, s, TC_MAX_SEGMENTS);
+    CHECK_EQ(n, 3);
+    CHECK_EQ(s[2].duration_us, 4000); CHECK(s[2].mark);
+
+    /* duree nulle en premiere moitie : fin de trame */
+    uint32_t w3[3] = { word(5985, 0, 2000, 1), word(0, 0, 3000, 1), word(1000, 0, 1000, 1) };
+    n = tc_proto_rmt_words_to_segments(w3, 3, s, TC_MAX_SEGMENTS);
+    CHECK_EQ(n, 2);
+    uint32_t w4[1] = { word(0, 1, 0, 1) };
+    CHECK_EQ(tc_proto_rmt_words_to_segments(w4, 1, s, TC_MAX_SEGMENTS), 0);
+
+    /* nwords respecte, entrees nulles */
+    CHECK_EQ(tc_proto_rmt_words_to_segments(w, 1, s, TC_MAX_SEGMENTS), 2);
+    CHECK_EQ(tc_proto_rmt_words_to_segments(w, 0, s, TC_MAX_SEGMENTS), 0);
+    CHECK_EQ(tc_proto_rmt_words_to_segments(NULL, 3, s, TC_MAX_SEGMENTS), 0);
+    CHECK_EQ(tc_proto_rmt_words_to_segments(w, 3, NULL, TC_MAX_SEGMENTS), 0);
+}
+
+static void test_rmt_words_max(void)
+{
+    tc_segment_t s[8];
+    uint32_t w[3] = { word(100, 0, 200, 1), word(300, 0, 400, 1), word(500, 0, 600, 1) };
+    memset(s, 0xAA, sizeof s);
+    CHECK_EQ(tc_proto_rmt_words_to_segments(w, 3, s, 3), 3);   /* coupe au milieu d'un mot */
+    CHECK_EQ(s[2].duration_us, 300);
+    CHECK_EQ(s[3].duration_us, 0xAAAA);                         /* rien ecrit au-dela de max */
+    CHECK_EQ(tc_proto_rmt_words_to_segments(w, 3, s, 4), 4);
+    CHECK_EQ(s[3].duration_us, 400);
+    CHECK_EQ(s[4].duration_us, 0xAAAA);
+    CHECK_EQ(tc_proto_rmt_words_to_segments(w, 3, s, 0), 0);
+}
+
+/* Aller-retour : segments encodes -> mots comme le RMT les enregistre (niveau GPIO = !mark,
+   paires (2k, 2k+1), derniere moitie a 0) -> segments. */
+static void roundtrip_words(uint32_t raw, bool is_long, bool is_ack)
+{
+    tc_segment_t a[TC_MAX_SEGMENTS], b[TC_MAX_SEGMENTS];
+    uint32_t w[TC_MAX_SEGMENTS / 2 + 1];
+    size_t n = enc(raw, is_long, is_ack, a);
+    CHECK(n > 0);
+    size_t nw = 0;
+    for (size_t k = 0; k < n; k += 2) {
+        uint16_t d1 = (k + 1 < n) ? a[k + 1].duration_us : 0;
+        unsigned l1 = (k + 1 < n) ? !a[k + 1].mark : 1;
+        w[nw++] = word(a[k].duration_us, !a[k].mark, d1, l1);
+    }
+    CHECK_EQ(nw, (n + 1) / 2);
+    size_t m = tc_proto_rmt_words_to_segments(w, nw, b, TC_MAX_SEGMENTS);
+    CHECK_EQ(m, n);
+    for (size_t k = 0; k < n && k < m; k++) {
+        CHECK_EQ(b[k].duration_us, a[k].duration_us);
+        CHECK_EQ(b[k].mark, a[k].mark);
+    }
+    tc_telegram_t t;
+    tc_decode_error_t e;
+    CHECK(tc_proto_decode(b, m, &t, &e));
+    CHECK_EQ(t.raw, raw);
+    CHECK_EQ(t.is_long, is_long);
+}
+
+static void test_rmt_words_roundtrip(void)
+{
+    roundtrip_words(0x1100, false, false);
+    roundtrip_words(0x0C30BA80, true, false);
+    roundtrip_words(0xFFFFFFFF, true, false);
+    roundtrip_words(0x1, false, true);
+}
+
 static void test_names(void)
 {
     CHECK(strcmp(tc_type_name(TC_TYPE_OPEN_DOOR), "OPEN_DOOR") == 0);
     CHECK(strcmp(tc_type_name(TC_TYPE_UNKNOWN), "UNKNOWN") == 0);
     CHECK(strcmp(tc_type_name((tc_type_t)999), "?") == 0);
     CHECK(strcmp(tc_decode_error_name(TC_ERR_PARITY), "parity") == 0);
+}
+
+static void test_next_frame(void)
+{
+    /* trame reelle captee sur le bus (Koch, OPEN_DOOR_LONG 0x14DEF480) suivie d'un ACK et de bruit */
+    tc_segment_t s[TC_MAX_SEGMENTS];
+    size_t n = enc(0x14DEF480, true, false, s);
+    CHECK_EQ(n, 35);
+    size_t m = enc(0x1, false, true, &s[n]);
+    CHECK_EQ(m, 7);
+    n += m;
+    s[n++] = (tc_segment_t){ 1500, false };          /* reste incomplet */
+    size_t pos = 0, st, len;
+    tc_telegram_t t;
+    tc_decode_error_t e;
+    CHECK(tc_proto_next_frame(s, n, &pos, &st, &len));
+    CHECK_EQ(st, 0); CHECK_EQ(len, 35);
+    CHECK(tc_proto_decode(&s[st], len, &t, &e));
+    CHECK_EQ(t.raw, 0x14DEF480);
+    tc_proto_classify(&t);
+    CHECK_EQ(t.type, TC_TYPE_OPEN_DOOR_LONG);
+    CHECK_EQ(t.serial, 0x4DEF4);
+    CHECK(tc_proto_next_frame(s, n, &pos, &st, &len));
+    CHECK_EQ(st, 35); CHECK_EQ(len, 7);
+    CHECK(tc_proto_decode(&s[st], len, &t, &e));
+    CHECK(t.is_response); CHECK_EQ(t.raw, 0x1);
+    CHECK(!tc_proto_next_frame(s, n, &pos, &st, &len));
+    CHECK_EQ(pos, n);
+    /* bruit avant le depart : ignore */
+    tc_segment_t r[TC_MAX_SEGMENTS];
+    r[0] = (tc_segment_t){ 1200, true };
+    r[1] = (tc_segment_t){ 2500, false };
+    size_t k = 2 + enc(0x1100, false, false, &r[2]);
+    pos = 0;
+    CHECK(tc_proto_next_frame(r, k, &pos, &st, &len));
+    CHECK_EQ(st, 2); CHECK_EQ(len, 19);
+    CHECK(tc_proto_decode(&r[st], len, &t, &e));
+    CHECK_EQ(t.raw, 0x1100);
+    /* trame tronquee : rien */
+    pos = 0;
+    CHECK(!tc_proto_next_frame(s, 20, &pos, &st, &len));
+    CHECK(!tc_proto_next_frame(NULL, 5, &pos, &st, &len));
 }
 
 int main(void)
@@ -520,5 +713,10 @@ int main(void)
     RUN(test_classify_short);
     RUN(test_whitelist);
     RUN(test_names);
+    RUN(test_next_frame);
+    RUN(test_is_for_me);
+    RUN(test_rmt_words_basic);
+    RUN(test_rmt_words_max);
+    RUN(test_rmt_words_roundtrip);
     T_END();
 }
