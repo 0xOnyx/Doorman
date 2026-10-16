@@ -655,6 +655,48 @@ static void test_names(void)
     CHECK(strcmp(tc_decode_error_name(TC_ERR_PARITY), "parity") == 0);
 }
 
+static void test_next_frame(void)
+{
+    /* trame reelle captee sur le bus (Koch, OPEN_DOOR_LONG 0x14DEF480) suivie d'un ACK et de bruit */
+    tc_segment_t s[TC_MAX_SEGMENTS];
+    size_t n = enc(0x14DEF480, true, false, s);
+    CHECK_EQ(n, 35);
+    size_t m = enc(0x1, false, true, &s[n]);
+    CHECK_EQ(m, 7);
+    n += m;
+    s[n++] = (tc_segment_t){ 1500, false };          /* reste incomplet */
+    size_t pos = 0, st, len;
+    tc_telegram_t t;
+    tc_decode_error_t e;
+    CHECK(tc_proto_next_frame(s, n, &pos, &st, &len));
+    CHECK_EQ(st, 0); CHECK_EQ(len, 35);
+    CHECK(tc_proto_decode(&s[st], len, &t, &e));
+    CHECK_EQ(t.raw, 0x14DEF480);
+    tc_proto_classify(&t);
+    CHECK_EQ(t.type, TC_TYPE_OPEN_DOOR_LONG);
+    CHECK_EQ(t.serial, 0x4DEF4);
+    CHECK(tc_proto_next_frame(s, n, &pos, &st, &len));
+    CHECK_EQ(st, 35); CHECK_EQ(len, 7);
+    CHECK(tc_proto_decode(&s[st], len, &t, &e));
+    CHECK(t.is_response); CHECK_EQ(t.raw, 0x1);
+    CHECK(!tc_proto_next_frame(s, n, &pos, &st, &len));
+    CHECK_EQ(pos, n);
+    /* bruit avant le depart : ignore */
+    tc_segment_t r[TC_MAX_SEGMENTS];
+    r[0] = (tc_segment_t){ 1200, true };
+    r[1] = (tc_segment_t){ 2500, false };
+    size_t k = 2 + enc(0x1100, false, false, &r[2]);
+    pos = 0;
+    CHECK(tc_proto_next_frame(r, k, &pos, &st, &len));
+    CHECK_EQ(st, 2); CHECK_EQ(len, 19);
+    CHECK(tc_proto_decode(&r[st], len, &t, &e));
+    CHECK_EQ(t.raw, 0x1100);
+    /* trame tronquee : rien */
+    pos = 0;
+    CHECK(!tc_proto_next_frame(s, 20, &pos, &st, &len));
+    CHECK(!tc_proto_next_frame(NULL, 5, &pos, &st, &len));
+}
+
 int main(void)
 {
     RUN(test_parity);
@@ -671,6 +713,7 @@ int main(void)
     RUN(test_classify_short);
     RUN(test_whitelist);
     RUN(test_names);
+    RUN(test_next_frame);
     RUN(test_is_for_me);
     RUN(test_rmt_words_basic);
     RUN(test_rmt_words_max);

@@ -118,6 +118,12 @@ bool tc_proto_is_for_me(const tc_telegram_t *t, uint32_t my_serial, uint8_t door
  * mark = (level == 0) (bus bas = GPIO RX a 0). Ecrit au plus max segments, renvoie leur nombre. */
 size_t tc_proto_rmt_words_to_segments(const uint32_t *words, size_t nwords, tc_segment_t *out, size_t max);
 
+/* Cherche la prochaine trame dans segs[*pos..n) : premier segment dans une fenetre de depart,
+ * longueur deduite (ACK 7, court 19, long 35 selon le depart et le bit LEN). Renvoie true et
+ * remplit *start / *len si une trame complete est disponible, et avance *pos apres elle ;
+ * sinon *pos = n. Sert a separer des telegrammes enchaines sans repos de 7 ms (ex. ACK). */
+bool tc_proto_next_frame(const tc_segment_t *segs, size_t n, size_t *pos, size_t *start, size_t *len);
+
 const char *tc_type_name(tc_type_t t);
 const char *tc_decode_error_name(tc_decode_error_t e);
 

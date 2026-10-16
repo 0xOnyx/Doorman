@@ -446,3 +446,45 @@ size_t tc_proto_rmt_words_to_segments(const uint32_t *words, size_t nwords, tc_s
     }
     return k;
 }
+
+static bool is_start(uint16_t d, bool *is_ack)
+{
+    if (d >= TC_START_CMD_MIN_US && d <= TC_START_CMD_MAX_US) {
+        *is_ack = false;
+        return true;
+    }
+    if (d >= TC_START_ACK_MIN_US && d <= TC_START_ACK_MAX_US) {
+        *is_ack = true;
+        return true;
+    }
+    return false;
+}
+
+bool tc_proto_next_frame(const tc_segment_t *segs, size_t n, size_t *pos, size_t *start, size_t *len)
+{
+    if (segs == NULL || pos == NULL || start == NULL || len == NULL) {
+        return false;
+    }
+    for (size_t i = *pos; i + 1 < n; i++) {
+        bool is_ack;
+        if (!is_start(segs[i].duration_us, &is_ack)) {
+            continue;
+        }
+        bool len_bit = segs[i + 1].duration_us >= TC_BIT1_MIN_US && segs[i + 1].duration_us <= TC_BIT1_MAX_US;
+        size_t want = len_bit ? TC_SEGMENTS_LONG : (is_ack ? TC_SEGMENTS_ACK : TC_SEGMENTS_SHORT);
+        if (i + want > n) {
+            /* un ACK court peut aussi demarrer en fenetre commande : essayer 7 si 19 ne tient pas */
+            if (!len_bit && i + TC_SEGMENTS_ACK <= n) {
+                want = TC_SEGMENTS_ACK;
+            } else {
+                break;
+            }
+        }
+        *start = i;
+        *len = want;
+        *pos = i + want;
+        return true;
+    }
+    *pos = n;
+    return false;
+}

@@ -38,27 +38,40 @@ static int to_mv(int raw)
 #define FRAME_END_US     7000      /* repos plus long : fin de trame */
 #define MAX_SEG          TC_MAX_SEGMENTS
 
-static void log_frame(tc_segment_t *segs, size_t n)
+static void log_raw(const char *why, const tc_segment_t *segs, size_t n)
 {
-    size_t k = tc_proto_merge_glitches(segs, n, CONFIG_TC_BUS_GLITCH_US);
-    k = tc_proto_strip_trailing_idle(segs, k);
-    tc_telegram_t t;
-    tc_decode_error_t err;
-    if (tc_proto_decode(segs, k, &t, &err)) {
-        tc_proto_classify(&t);
-        ESP_LOGI(TAG, "TC ADC %s raw=0x%0*lX len=%u serial=0x%05lX addr=%u chk=ok%s",
-                 tc_type_name(t.type), t.is_long ? 8 : 4, (unsigned long)t.raw,
-                 t.is_long ? 32u : (t.type == TC_TYPE_ACK ? 4u : 16u),
-                 (unsigned long)t.serial, t.address, t.is_response ? " rsp" : "");
-        return;
-    }
-    /* echec : durees brutes pour l'analyse */
-    char line[300];
-    int pos = snprintf(line, sizeof line, "TC ADC ERR %s n=%u :", tc_decode_error_name(err), (unsigned)n);
+    char line[400];
+    int pos = snprintf(line, sizeof line, "TC ADC ERR %s n=%u :", why, (unsigned)n);
     for (size_t i = 0; i < n && pos < (int)sizeof line - 8; i++) {
         pos += snprintf(line + pos, sizeof line - pos, " %u%c", segs[i].duration_us, segs[i].mark ? 'b' : 'h');
     }
     ESP_LOGW(TAG, "%s", line);
+}
+
+static void log_frame(tc_segment_t *segs, size_t n)
+{
+    size_t k = tc_proto_merge_glitches(segs, n, CONFIG_TC_BUS_GLITCH_US);
+    k = tc_proto_strip_trailing_idle(segs, k);
+    size_t pos = 0, st, len;
+    bool any = false;
+    while (tc_proto_next_frame(segs, k, &pos, &st, &len)) {
+        tc_telegram_t t;
+        tc_decode_error_t err;
+        any = true;
+        if (tc_proto_decode(&segs[st], len, &t, &err)) {
+            tc_proto_classify(&t);
+            ESP_LOGI(TAG, "TC ADC %s raw=0x%0*lX len=%u serial=0x%05lX addr=%u payload=0x%lX chk=ok%s",
+                     tc_type_name(t.type), t.is_long ? 8 : 4, (unsigned long)t.raw,
+                     t.is_long ? 32u : (t.type == TC_TYPE_ACK ? 4u : 16u),
+                     (unsigned long)t.serial, t.address, (unsigned long)t.payload,
+                     t.is_response ? " rsp" : "");
+        } else {
+            log_raw(tc_decode_error_name(err), &segs[st], len);
+        }
+    }
+    if (!any) {
+        log_raw("aucun depart", segs, k);
+    }
 }
 
 static void probe_task(void *arg)
