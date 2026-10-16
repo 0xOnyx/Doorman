@@ -11,6 +11,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "tc_proto.h"
 
 static const char *TAG = "tc_adc";
 
@@ -31,31 +32,82 @@ static int to_mv(int raw)
     return raw * 3100 / 4095;              /* approximation sans calibration */
 }
 
+/* Seuils avec hysteresis (mV sur la broche) : repos ~2950 mV, bas mesure ~860 mV. */
+#define THR_LOW_MV       1700      /* passe a "bas" (mark) sous ce seuil */
+#define THR_HIGH_MV      2100      /* repasse a "haut" (space) au-dessus */
+#define FRAME_END_US     7000      /* repos plus long : fin de trame */
+#define MAX_SEG          TC_MAX_SEGMENTS
+
+static void log_frame(tc_segment_t *segs, size_t n)
+{
+    size_t k = tc_proto_merge_glitches(segs, n, CONFIG_TC_BUS_GLITCH_US);
+    k = tc_proto_strip_trailing_idle(segs, k);
+    tc_telegram_t t;
+    tc_decode_error_t err;
+    if (tc_proto_decode(segs, k, &t, &err)) {
+        tc_proto_classify(&t);
+        ESP_LOGI(TAG, "TC ADC %s raw=0x%0*lX len=%u serial=0x%05lX addr=%u chk=ok%s",
+                 tc_type_name(t.type), t.is_long ? 8 : 4, (unsigned long)t.raw,
+                 t.is_long ? 32u : (t.type == TC_TYPE_ACK ? 4u : 16u),
+                 (unsigned long)t.serial, t.address, t.is_response ? " rsp" : "");
+        return;
+    }
+    /* echec : durees brutes pour l'analyse */
+    char line[300];
+    int pos = snprintf(line, sizeof line, "TC ADC ERR %s n=%u :", tc_decode_error_name(err), (unsigned)n);
+    for (size_t i = 0; i < n && pos < (int)sizeof line - 8; i++) {
+        pos += snprintf(line + pos, sizeof line - pos, " %u%c", segs[i].duration_us, segs[i].mark ? 'b' : 'h');
+    }
+    ESP_LOGW(TAG, "%s", line);
+}
+
 static void probe_task(void *arg)
 {
     volatile bool *running = arg;
-    int64_t last_idle_log = 0;
+    static tc_segment_t segs[MAX_SEG];
+    size_t n = 0;
+    bool low = false;                      /* niveau courant apres hysteresis */
+    int64_t edge_us = esp_timer_get_time();
+    int64_t win_end = edge_us + WINDOW_US, last_idle_log = 0;
+    int rmin = 4095, rmax = 0, cnt = 0;
     *running = true;
     for (;;) {
-        int rmin = 4095, rmax = 0, n = 0;
-        int64_t end = esp_timer_get_time() + WINDOW_US;
-        while (esp_timer_get_time() < end) {
-            int raw;
-            if (adc_oneshot_read(s_adc, s_chan, &raw) == ESP_OK) {
-                if (raw < rmin) rmin = raw;
-                if (raw > rmax) rmax = raw;
+        int raw;
+        if (adc_oneshot_read(s_adc, s_chan, &raw) != ESP_OK) {
+            continue;
+        }
+        int64_t now = esp_timer_get_time();
+        if (raw < rmin) rmin = raw;
+        if (raw > rmax) rmax = raw;
+        cnt++;
+        int mv = to_mv(raw);
+        bool new_low = low ? (mv < THR_HIGH_MV) : (mv < THR_LOW_MV);
+        if (new_low != low) {
+            uint32_t d = (uint32_t)(now - edge_us);
+            if (n < MAX_SEG) {
+                segs[n].duration_us = d > 0xFFFF ? 0xFFFF : (uint16_t)d;
+                segs[n].mark = low;        /* le segment qui se termine */
                 n++;
             }
+            low = new_low;
+            edge_us = now;
+        } else if (!low && n > 0 && now - edge_us > FRAME_END_US) {
+            log_frame(segs, n);            /* trame terminee (repos > 7 ms) */
+            n = 0;
+        } else if (!low && n == 0) {
+            edge_us = now;                 /* au repos : le premier segment commence au front */
         }
-        int mn = to_mv(rmin), mx = to_mv(rmax);
-        int64_t now = esp_timer_get_time();
-        if (mx - mn >= ACTIVITY_MV) {
-            ESP_LOGI(TAG, "ACTIVITE min=%d mV max=%d mV ecart=%d mV (%d mesures)", mn, mx, mx - mn, n);
-        } else if (now - last_idle_log >= IDLE_LOG_US) {
-            ESP_LOGI(TAG, "repos min=%d mV max=%d mV (%d mesures / %d ms)", mn, mx, n, WINDOW_US / 1000);
-            last_idle_log = now;
+        if (now >= win_end) {
+            int mn = to_mv(rmin), mx = to_mv(rmax);
+            if (mx - mn >= ACTIVITY_MV) {
+                ESP_LOGI(TAG, "ACTIVITE min=%d mV max=%d mV (%d mesures / 250 ms)", mn, mx, cnt);
+            } else if (now - last_idle_log >= IDLE_LOG_US) {
+                ESP_LOGI(TAG, "repos min=%d mV max=%d mV (%d mesures / 250 ms)", mn, mx, cnt);
+                last_idle_log = now;
+            }
+            rmin = 4095; rmax = 0; cnt = 0;
+            win_end = now + WINDOW_US;
         }
-        vTaskDelay(1);                     /* laisser respirer IDLE (chien de garde) */
     }
 }
 
@@ -84,6 +136,7 @@ esp_err_t tc_adc_probe_start(volatile bool *running)
         ESP_LOGW(TAG, "pas de calibration ADC : tensions approximatives");
     }
     ESP_LOGW(TAG, "MODE DIAGNOSTIC ADC sur GPIO%d : decodage du bus desactive", CONFIG_TC_BUS_RX_GPIO);
-    return xTaskCreatePinnedToCore(probe_task, "tc_adc", 3072, (void *)running, 1, NULL, 1) == pdPASS ? ESP_OK : ESP_FAIL;
+    /* priorite 1 sur le coeur 1, boucle sans pause : le build de diagnostic coupe la surveillance d IDLE du coeur 1 */
+    return xTaskCreatePinnedToCore(probe_task, "tc_adc", 4096, (void *)running, 1, NULL, 1) == pdPASS ? ESP_OK : ESP_FAIL;
 }
 #endif
