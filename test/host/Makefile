@@ -8,7 +8,7 @@ else
 EXE :=
 endif
 
-TESTS := test_ota_auth$(EXE) test_logbuf$(EXE) test_tc_proto$(EXE) test_tc_slicer$(EXE) test_tc_tx_policy$(EXE)
+TESTS := test_ota_auth$(EXE) test_logbuf$(EXE) test_tc_proto$(EXE) test_tc_slicer$(EXE) test_tc_tx_policy$(EXE) test_hk_code$(EXE)
 
 all: $(TESTS)
 
@@ -27,12 +27,16 @@ test_tc_slicer$(EXE): test_tc_slicer.c ../../components/tc_bus/tc_slicer.c ../..
 test_tc_tx_policy$(EXE): test_tc_tx_policy.c ../../components/tc_bus/tc_tx_policy.c ../../components/tc_bus/tc_proto.c ../../components/tc_bus/include/tc_tx_policy.h ../../components/tc_bus/include/tc_proto.h t.h
 	$(CC) $(CFLAGS) -o $@ test_tc_tx_policy.c ../../components/tc_bus/tc_tx_policy.c ../../components/tc_bus/tc_proto.c
 
+test_hk_code$(EXE): test_hk_code.c ../../main/hk_code.h t.h
+	$(CC) $(CFLAGS) -o $@ test_hk_code.c
+
 test: $(TESTS)
 	./test_ota_auth$(EXE)
 	./test_logbuf$(EXE)
 	./test_tc_proto$(EXE)
 	./test_tc_slicer$(EXE)
 	./test_tc_tx_policy$(EXE)
+	./test_hk_code$(EXE)
 
 clean:
 	rm -f $(TESTS)

@@ -63,6 +63,25 @@ menu "Interphone"
                 SoftAP et l'acces distant ne reviendrait qu'en passant par lui.
     endmenu
 
+    menu "HomeKit"
+        config APP_HK_SETUP_CODE
+            string "Code d'appairage (XXX-XX-XXX, chiffres)"
+            default ""
+            help
+                Code saisi dans l'app Maison pour ajouter l'accessoire. Format XXX-XX-XXX (8 chiffres).
+                Refuses a la compilation : format different, codes triviaux (000-00-000 a 999-99-999,
+                123-45-678, 876-54-321). Ne jamais le publier : il n'apparait ni dans les logs ni
+                dans /info.
+        config APP_HK_SETUP_ID
+            string "Setup ID (4 caracteres, chiffres ou majuscules A-Z)"
+            default ""
+            help
+                Identifiant de configuration HomeKit (ex. K7QP), 4 caracteres 0-9 ou A-Z.
+        config APP_HK_NAME
+            string "Nom de l'accessoire dans l'app Maison"
+            default "Interphone"
+    endmenu
+
     config APP_HEARTBEAT_S
         int "Periode du battement de coeur dans les logs (s, 0 = desactive)"
         range 0 3600

@@ -24,3 +24,11 @@ _Static_assert(sizeof(CONFIG_APP_RECOVERY_AP_PASSWORD) - 1 >= 8 && sizeof(CONFIG
 _Static_assert(CONFIG_APP_SELFTEST_TIMEOUT_S < CONFIG_APP_RECOVERY_AP_DELAY_S,
                "auto-test >= delai SoftAP : une image sans Wi-Fi serait validee par le SoftAP (APP_BENCH_TEST pour l'etabli)");
 #endif
+
+/* HomeKit (spec phase 3, section 5) : vides par defaut, l'image refuse de se construire sans eux.
+ * Le format exact et le refus des codes triviaux sont verifies par hk_config_check.cpp. */
+_Static_assert(sizeof(CONFIG_APP_HK_SETUP_CODE) > 1, "APP_HK_SETUP_CODE vide : renseigner menuconfig > Interphone > HomeKit");
+_Static_assert(sizeof(CONFIG_APP_HK_SETUP_CODE) - 1 == 10, "APP_HK_SETUP_CODE : format XXX-XX-XXX (10 caracteres)");
+_Static_assert(sizeof(CONFIG_APP_HK_SETUP_ID) - 1 == 4, "APP_HK_SETUP_ID : 4 caracteres 0-9 ou A-Z");
+_Static_assert(sizeof(CONFIG_APP_HK_NAME) > 1 && sizeof(CONFIG_APP_HK_NAME) - 1 <= 64,
+               "APP_HK_NAME : 1 a 64 caracteres");

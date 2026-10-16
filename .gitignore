@@ -16,3 +16,4 @@ __pycache__/
 .claude/
 test/host/test_tc_slicer
 test/host/test_tc_tx_policy
+test/host/test_hk_code
