@@ -1,4 +1,5 @@
 #include "tc_bus.h"
+#include <stdio.h>
 #include "tc_bus_priv.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
@@ -41,13 +42,21 @@ static void log_error(tc_decode_error_t err, const tc_segment_t *segs, size_t k,
         return;
     }
     s_last_err_log_us = now;
-    if (s_err_masked) {
-        ESP_LOGW(TAG, "TC RX ERR %s n=%u first=%u last=%u (+%lu masquees)", tc_decode_error_name(err),
-                 (unsigned)k, segs[0].duration_us, segs[k - 1].duration_us, (unsigned long)s_err_masked);
-    } else {
-        ESP_LOGW(TAG, "TC RX ERR %s n=%u first=%u last=%u", tc_decode_error_name(err),
-                 (unsigned)k, segs[0].duration_us, segs[k - 1].duration_us);
+    /* durees brutes (b = bus bas, h = haut) pour analyser les trames inconnues ; tampon statique :
+       une seule tache de reception appelle cette fonction */
+    static char line[256];
+    int pos = snprintf(line, sizeof line, "TC RX ERR %s n=%u", tc_decode_error_name(err), (unsigned)k);
+    if (s_err_masked && pos < (int)sizeof line) {
+        pos += snprintf(line + pos, sizeof line - pos, " (+%lu masquees)", (unsigned long)s_err_masked);
     }
+    if (pos < (int)sizeof line) {
+        pos += snprintf(line + pos, sizeof line - pos, " (x100 us) :");   /* compact : tient dans une ligne netlog de 256 */
+    }
+    for (size_t i = 0; i < k && pos < (int)sizeof line - 8; i++) {
+        pos += snprintf(line + pos, sizeof line - pos, " %u%c", (unsigned)((segs[i].duration_us + 50) / 100),
+                        segs[i].mark ? 'b' : 'h');
+    }
+    ESP_LOGW(TAG, "%s", line);
     s_err_masked = 0;
 }
 
