@@ -7,6 +7,13 @@ menu "Bus TC (tc_bus)"
         int "GPIO d'emission (base du transistor)"
         range 0 48
         default 8
+    config TC_BUS_ADC_PROBE
+        bool "DIAGNOSTIC : mesurer la tension RX a l'ADC au lieu de decoder le bus"
+        default n
+        help
+            Mode de mise au point : remplace la reception RMT par une mesure analogique
+            de la broche RX (tension min / max par fenetre de 250 ms). Aucun telegramme
+            n'est decode dans ce mode. Ne pas laisser actif.
     config TC_BUS_TX_ENABLE
         bool "Compiler l'emission (DOIT rester desactive en phase 0)"
         default n

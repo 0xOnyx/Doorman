@@ -145,10 +145,17 @@ static void rx_task(void *arg)
     }
 }
 
+#if CONFIG_TC_BUS_ADC_PROBE
+esp_err_t tc_adc_probe_start(volatile bool *running);
+#endif
+
 esp_err_t tc_bus_start(tc_bus_rx_cb_t cb, void *ctx)
 {
     s_cb = cb;
     s_ctx = ctx;
+#if CONFIG_TC_BUS_ADC_PROBE
+    return tc_adc_probe_start(&s_running);
+#endif
     s_queue = xQueueCreate(4, sizeof(size_t));
     if (s_queue == NULL) {
         return ESP_ERR_NO_MEM;
