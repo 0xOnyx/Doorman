@@ -1,4 +1,5 @@
 #include "app_status.h"
+#include "driver/temperature_sensor.h"
 
 const char *app_status_reset_reason_name(esp_reset_reason_t r)
 {
@@ -49,4 +50,22 @@ const char *app_status_partition_state(const esp_partition_t *p)
         return "error";
     }
     return app_status_ota_state_name(st);
+}
+
+int app_status_chip_temp_c(void)
+{
+    static temperature_sensor_handle_t s_tsens;
+    static bool s_tried;
+    if (!s_tried) {
+        s_tried = true;
+        temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+        if (temperature_sensor_install(&cfg, &s_tsens) != ESP_OK || temperature_sensor_enable(s_tsens) != ESP_OK) {
+            s_tsens = NULL;
+        }
+    }
+    float c;
+    if (s_tsens == NULL || temperature_sensor_get_celsius(s_tsens, &c) != ESP_OK) {
+        return -1000;
+    }
+    return (int)(c + (c >= 0 ? 0.5f : -0.5f));
 }

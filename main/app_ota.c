@@ -14,6 +14,7 @@
 #include "app_status.h"
 #include "app_net.h"
 #include "tc_bus.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "ota";
 
@@ -94,7 +95,8 @@ static esp_err_t info_get(httpd_req_t *req)
         "{\"version\":\"%s\",\"idf\":\"%s\",\"partition\":\"%s\",\"ota_state\":\"%s\","
         "\"other_partition\":\"%s\",\"other_state\":\"%s\",\"uptime_s\":%lld,"
         "\"heap_free\":%" PRIu32 ",\"heap_min\":%" PRIu32 ",\"rssi\":%d,\"reset_reason\":\"%s\","
-        "\"net\":\"%s\",\"bus_frames_ok\":%" PRIu32 ",\"bus_frames_err\":%" PRIu32 ",",
+        "\"net\":\"%s\",\"bus_frames_ok\":%" PRIu32 ",\"bus_frames_err\":%" PRIu32 ","
+        "\"chip_temp_c\":%d,\"rx_gpio\":%d,\"rx_level\":%d,",
         app->version, esp_get_idf_version(),
         run ? run->label : "?", app_status_partition_state(run),
         other ? other->label : "?", app_status_partition_state(other),
@@ -102,7 +104,8 @@ static esp_err_t info_get(httpd_req_t *req)
         esp_get_free_heap_size(), esp_get_minimum_free_heap_size(),
         app_net_rssi(), app_status_reset_reason_name(esp_reset_reason()),
         app_net_recovery_ap_active() ? "recovery" : "sta",
-        bs.frames_ok, bs.frames_err);
+        bs.frames_ok, bs.frames_err,
+        app_status_chip_temp_c(), CONFIG_TC_BUS_RX_GPIO, gpio_get_level(CONFIG_TC_BUS_RX_GPIO));
     if (n < 0 || n >= cap) {
         return reply_close(req, "500 Internal Server Error", "info too long\n");
     }
