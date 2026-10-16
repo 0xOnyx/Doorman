@@ -4,7 +4,7 @@ Firmware ESP-IDF pour ESP32-S3 (ESP32-S3FH4R2 : 2 cœurs, 4 Mo de flash, 2 Mo de
 
 Guide d'utilisation complet : `docs/utilisation.md`
 
-**État : phase 0** (socle distant + sniffer du bus). L'émission sur le bus et HomeKit arriveront par OTA dans les phases suivantes. Voir `docs/roadmap.md` et les spécifications dans `docs/superpowers/specs/`.
+**État : phase 2** (socle distant, sniffer du bus, ouverture de la porte par `POST /bus/open-door` quand l'émission est compilée). HomeKit arrivera par OTA dans les phases suivantes. Voir `docs/roadmap.md` et les spécifications dans `docs/superpowers/specs/`.
 
 ## Prérequis (Linux)
 
@@ -192,8 +192,9 @@ curl -X POST -H "Authorization: Bearer $OTA_TOKEN" http://interphone.local:8080/
 
 - Le bus est partagé par tout l'immeuble : une émission erronée dérange les voisins.
 - GPIO8 (émission, `TC_BUS_TX_GPIO`) est forcé à 0 en toute première ligne de `app_main`.
-- L'émission n'est pas compilée en phase 0.
-- Seules les commandes `OPEN_DOOR`, `OPEN_DOOR_LONG` (Koch 60/70) et `LIGHT` seront autorisées (liste blanche dans `tc_proto.c`).
+- L'émission n'est compilée que si `TC_BUS_TX_ENABLE=y` (menuconfig, « Bus TC (tc_bus) » → « Compiler l'emission ») ; `sdkconfig.defaults` la laisse désactivée. Sans elle, aucun code d'émission n'est dans l'image et GPIO8 reste à 0.
+- Seules les commandes `OPEN_DOOR`, `OPEN_DOOR_LONG` (Koch 60/70) et `LIGHT` sont autorisées (liste blanche dans `tc_proto.c`) ; `POST /bus/open-door` n'émet que le télégramme d'ouverture configuré, jamais un télégramme venu du réseau.
+- Garde-fous à chaque émission (`tc_tx_policy.c`, testés sur PC) : 200 ms entre deux émissions, 5 par minute, bus calme depuis 200 ms, refus pendant une OTA et tant que le SoftAP de secours est actif. Le canal RMT a son niveau de repos à 0 avant d'être relié à GPIO8 ; en cas d'erreur, la broche est rendue au GPIO à 0 et l'émission coupée jusqu'au redémarrage.
 
 ## Crédits
 

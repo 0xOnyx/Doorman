@@ -4,8 +4,9 @@ Ce guide explique comment se servir de l'interphone une fois le premier flash US
 (voir le README, section « Flasher la carte »). À partir de là, **tout passe par le réseau** :
 logs, état, mises à jour et redémarrage.
 
-État actuel : **phase 0**. La carte écoute le bus et journalise chaque télégramme ;
-elle n'émet rien sur le bus et HomeKit n'est pas encore là (phases 2 et 3, livrées par OTA).
+État actuel : **phase 2**. La carte écoute le bus et journalise chaque télégramme ; une image
+compilée avec l'émission (`TC_BUS_TX_ENABLE`) sait aussi ouvrir la porte de l'immeuble sur commande
+(section 8). HomeKit n'est pas encore là (phase 3, livrée par OTA).
 
 ---
 
@@ -65,6 +66,9 @@ Ctrl+C pour quitter.
 | `bus repos min=2930 max=2990 mV (20000 Hz)` | Toutes les 30 s quand le bus est resté au repos : tension mesurée sur la broche RX et cadence réelle de l'ADC. Rien de plus quand il y a eu du trafic (les lignes `TC RX` suffisent) |
 | `ADC : reserve pleine, N trame(s) de conversion perdue(s)` | La tâche de réception a pris du retard (OTA en cours par exemple) : un télégramme a pu être manqué. Rare et sans gravité ; fréquent = à signaler |
 | `relance de l'ADC (...)` | Le convertisseur ne donnait plus d'échantillons : la carte le relance seule. Une fois de temps en temps, sans gravité ; en boucle = à signaler |
+| `emission ACTIVE sur GPIO8 (RMT 1 MHz, repos 0) : seul OPEN_DOOR_LONG raw=0x14DEF480 ...` | Au démarrage d'une image avec l'émission : le seul télégramme que la carte peut émettre (section 8) |
+| `TX OPEN_DOOR_LONG raw=0x14DEF480 -> echo=oui reply=0x0001 ...` | Ouverture émise, relue sur le bus (écho) et acquittée par la centrale (section 8) |
+| `TX ... refuse : too_soon` (ou `rate_limit`, `bus_busy`, `blocked`) | Ouverture refusée par un garde-fou, rien n'a été émis (section 8) |
 | `nouvelle image en attente : auto-test (90 s max)` | Premier démarrage d'une nouvelle version |
 | `SELFTEST OK, image validee` | La nouvelle version est gardée |
 | `SELFTEST FAILED ... rollback` | La nouvelle version est rejetée, retour automatique à la précédente |
@@ -89,7 +93,9 @@ Exemple de réponse :
  "chip_temp_c":41,"rx_gpio":9,"rx_mv":2955,
  "bus":{"ok":42,"err":3,"for_me":2,"my_serial":"0xC30BA","door_call":5,"internal_call":0,
         "floor_call":1,"open_door":2,"open_door_long":0,"light":1,"unknown":4,
-        "last_raw":"0x1100","last_type":"OPEN_DOOR","last_age_s":12}}
+        "last_raw":"0x1100","last_type":"OPEN_DOOR","last_age_s":12},
+ "tx":{"enabled":true,"form":"long","raw":"0x14DEF480","sent":1,"echo":1,"reply":1,"refused":0,
+       "last_age_s":300}}
 ```
 
 | Champ | À surveiller |
@@ -103,6 +109,7 @@ Exemple de réponse :
 | `bus_frames_ok` / `bus_frames_err` | Trames lues / rejetées depuis le démarrage (repris dans `bus.ok` / `bus.err`) |
 | `rx_gpio` / `rx_mv` | Broche de réception et dernière tension mesurée dessus, en mV : ~2950 au repos. `-1` si inconnue (récepteur RMT) |
 | `bus` | Activité du bus depuis le démarrage, détaillée en section 7 |
+| `tx` | Émission : `{"enabled":false}` si l'image ne la compile pas ; sinon détaillée en section 8 |
 
 Réponses d'erreur : `401 unauthorized` (token absent ou faux), `503` (la carte a été compilée
 sans token valide, ce que le build refuse désormais).
@@ -181,7 +188,7 @@ Cas typiques : nouvelle box, mot de passe Wi-Fi changé.
 Pendant ce temps la carte continue d'essayer la box (au plus toutes les 60 s) : chaque essai
 coupe la radio 1 à 2 s, une petite pause dans les logs est normale.
 
-Si le point d'accès de secours n'apparaît jamais : il ne reste que l'USB (section 9).
+Si le point d'accès de secours n'apparaît jamais : il ne reste que l'USB (section 10).
 
 ---
 
@@ -276,7 +283,66 @@ L'ancien récepteur numérique reste disponible (**Recepteur du bus** → RMT) p
 
 ---
 
-## 8. Ce que la carte fait toute seule
+## 8. Ouvrir la porte depuis la carte (phase 2)
+
+Commande **temporaire** (elle sera remplacée par HomeKit en phase 4) : elle n'existe que dans une
+image compilée avec l'émission (`idf.py menuconfig` → **« Bus TC (tc_bus) »** → **« Compiler
+l'emission »**). Sans elle, `/bus/open-door` répond `404` et `/info` montre `"tx":{"enabled":false}`.
+
+```bash
+curl -X POST -H "Authorization: Bearer $OTA_TOKEN" http://interphone.local:8080/bus/open-door
+```
+
+Aucun paramètre : le corps de la requête est ignoré, la carte n'émet **que** le télégramme
+d'ouverture choisi dans menuconfig (**« Telegramme d'ouverture emis »**) :
+
+- **Long** (par défaut) : `OPEN_DOOR_LONG` avec ton numéro de série, `0x14DEF480` pour la série
+  `0x4DEF4` et la platine 0. C'est ce que ton poste envoie hors communication. Le build refuse
+  cette forme si `TC_BUS_MY_SERIAL` vaut 0.
+- **Court** : `OPEN_DOOR` `0x1100` (+ adresse de la platine), ce que le poste envoie pendant une
+  communication.
+
+La commande est synchrone (quelques secondes au plus) : la carte attend que le bus soit calme,
+émet, puis relit son propre télégramme (l'**écho**) et la réponse de la centrale.
+
+| Réponse | Signification |
+|---|---|
+| `200 {"sent":true,"raw":"0x14DEF480","echo":true,"reply":"0x0001"}` | Émis. `echo` : relu à l'identique sur le bus ; `reply` : réponse de la centrale (`0x0001` après une ouverture), `null` si aucune dans les 500 ms |
+| `409 {"sent":false,"reason":"too_soon"}` | Moins de 200 ms depuis la dernière émission (ou une émission est en cours) |
+| `409 {"sent":false,"reason":"rate_limit"}` | Déjà 5 émissions dans la dernière minute : attendre |
+| `503 {"sent":false,"reason":"bus_busy"}` | Le bus n'a pas été calme 200 ms de suite pendant 2 s (une communication est en cours) |
+| `503 {"sent":false,"reason":"blocked"}` | OTA en cours, point d'accès de secours actif, ou réception du bus arrêtée |
+| `500 {"sent":false,"reason":"rmt_error",...}` | L'émetteur a échoué : il est coupé (GPIO8 remis à 0) jusqu'au prochain redémarrage |
+| `401 unauthorized` | Token absent ou faux |
+
+`"sent":true` avec `"echo":false` : le télégramme est parti mais la carte ne l'a pas relu ; si la
+porte ne s'est pas ouverte, regarder les logs (`TC RX ERR` juste après la ligne `TX`).
+
+**Garde-fous** (le bus est partagé par tout l'immeuble) :
+
+- seuls `OPEN_DOOR`, `OPEN_DOOR_LONG` et `LIGHT` peuvent être émis (liste blanche, testée sur PC),
+  et la commande HTTP ne construit que le télégramme d'ouverture configuré ;
+- 200 ms au moins entre deux émissions, 5 au plus par minute glissante ;
+- bus calme depuis 200 ms avant d'émettre (attente de 2 s au plus) ;
+- émission refusée pendant une OTA et tant que le point d'accès de secours est actif ;
+- GPIO8 reste à 0 en dehors des 150 ms d'un télégramme ; en cas d'erreur de l'émetteur, la broche
+  est rendue à 0 et l'émission coupée jusqu'au redémarrage.
+
+Dans `/info`, l'objet `tx` :
+
+| Champ | Signification |
+|---|---|
+| `enabled` | `true` si l'image compile l'émission |
+| `form` / `raw` | Forme (`long` ou `short`) et télégramme d'ouverture configuré |
+| `sent` / `echo` / `reply` / `refused` | Émissions, échos relus, réponses de la centrale, demandes refusées depuis le démarrage |
+| `last_age_s` | Âge de la dernière émission en secondes, `null` si aucune |
+
+Dans les logs, l'écho est marqué `(echo)` et n'est ni compté « pour moi » ni transmis plus loin ;
+la réponse de la centrale est suivie de `(reponse a notre emission)`.
+
+---
+
+## 9. Ce que la carte fait toute seule
 
 - **Rollback** : une nouvelle version qui n'obtient pas le réseau, le serveur de logs, le
   serveur HTTP et la réception du bus en 90 s est rejetée ; la carte redémarre sur la précédente.
@@ -284,11 +350,12 @@ L'ancien récepteur numérique reste disponible (**Recepteur du bus** → RMT) p
 - **Reconnexion Wi-Fi** : automatique, sans jamais redémarrer pour ça.
 - **Santé** : si le serveur HTTP ou le serveur de logs meurt, ou s'il n'y a plus aucun accès
   réseau (ni box ni secours) pendant 15 min, la carte redémarre d'elle-même.
-- **Bus** : la carte n'émet jamais rien en phases 0 et 1 (la sortie GPIO8 reste à 0).
+- **Bus** : la carte n'émet jamais rien d'elle-même. Sans l'émission compilée, la sortie GPIO8
+  reste à 0 ; avec, elle n'émet que sur `POST /bus/open-door` (section 8).
 
 ---
 
-## 9. Dernier recours : l'USB
+## 10. Dernier recours : l'USB
 
 Si plus rien ne répond (ni `interphone.local`, ni le point d'accès de secours après 10 min) :
 
@@ -299,7 +366,7 @@ Si plus rien ne répond (ni `interphone.local`, ni le point d'accès de secours 
 
 ---
 
-## 10. À sauvegarder hors du PC
+## 11. À sauvegarder hors du PC
 
 | Fichier | Pourquoi |
 |---|---|
