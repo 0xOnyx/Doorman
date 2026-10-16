@@ -52,4 +52,4 @@ CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y
 
 # HomeKit (phase 3) : le minuteur du mode appairage du SDK (10 min) s'execute dans la tache des
 # minuteurs FreeRTOS (de-annonce mDNS, printf, evenement) : 2048 octets par defaut, trop juste.
-CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=3072
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096

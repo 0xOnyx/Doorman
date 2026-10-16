@@ -555,6 +555,24 @@ static void test_is_for_me(void)
 /* --- sonnette HomeKit : appel pour moi, strict --- */
 static void test_is_ring_for_me(void)
 {
+    /* vecteurs reels du bus de l'immeuble (2026-10-16) : sonnettes palieres des voisins */
+    {
+        tc_telegram_t v = cls(0x14DF3A41, true, false);
+        CHECK_EQ(v.type, TC_TYPE_FLOOR_CALL);
+        CHECK(!tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x14DF3941, true, false);
+        CHECK(!tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x14DEF441, true, false);           /* ma sonnette paliere */
+        CHECK(tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x04DEF480, true, false);           /* appel de la platine de rue vers moi */
+        CHECK_EQ(v.type, TC_TYPE_DOOR_CALL);
+        CHECK(tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x14DEF480, true, false);           /* mon ouverture : jamais une sonnerie */
+        CHECK(!tc_proto_is_ring_for_me(&v, 0x4DEF4));
+        v = cls(0x34DEF400, true, false);           /* START_TALKING pour moi : jamais une sonnerie */
+        CHECK(!tc_proto_is_ring_for_me(&v, 0x4DEF4));
+    }
+
     /* DOOR_CALL (platine de rue, bit 6 = 0) et FLOOR_CALL (sonnette paliere) avec mon numero */
     static const struct { uint32_t raw; tc_type_t type; } rings[] = {
         { 0x0C30BA80, TC_TYPE_DOOR_CALL },

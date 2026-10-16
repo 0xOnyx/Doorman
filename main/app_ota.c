@@ -292,6 +292,14 @@ static esp_err_t hk_reset_post(httpd_req_t *req)
     if (s_in_progress) {
         return reply_close(req, "409 Conflict", "ota in progress\n");
     }
+    {
+        /* image encore en auto-test : le redemarrage du SDK annulerait la mise a jour (rollback) */
+        const esp_partition_t *run = esp_ota_get_running_partition();
+        esp_ota_img_states_t st;
+        if (run && esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY) {
+            return reply_close(req, "409 Conflict", "self-test pending\n");
+        }
+    }
     esp_err_t e = app_homekit_reset_pairings();
     if (e == ESP_ERR_INVALID_STATE) {
         return reply_close(req, "503 Service Unavailable", "homekit not started\n");
