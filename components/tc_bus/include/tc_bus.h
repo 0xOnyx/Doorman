@@ -23,6 +23,9 @@ esp_err_t tc_bus_start(tc_bus_rx_cb_t cb, void *ctx);
 bool      tc_bus_is_running(void);
 /* Copie coherente (sous verrou) des statistiques. */
 void      tc_bus_get_stats(tc_bus_stats_t *s);
+/* Derniere tension mesuree sur la broche RX (mV), -1 si inconnue (pas encore d'echantillon,
+ * ou recepteur RMT sans mesure analogique). */
+int       tc_bus_rx_mv(void);
 
 /* Emission : no-op en phase 0 (TX non compile), appele par l'OTA. */
 void      tc_bus_tx_block(void);
