@@ -48,3 +48,11 @@ La sonnette HomeKit ne doit pas utiliser `tc_proto_is_for_me` (repère de log, v
 Prévoir un prédicat strict `tc_proto_is_ring_for_me` : `DOOR_CALL` (et `FLOOR_CALL`, sonnette palière) avec mon
 numéro ; `INTERNAL_CALL` seulement après avoir vérifié sur le bus si le numéro désigne l'appelé ou l'appelant ;
 anti-rebond si un `DOOR_CALL` est répété.
+
+## Décisions de l'utilisateur pour la phase 4 (2026-10-16)
+
+- **Pas de bouton BOOT** : la carte est installée derrière l'interphone, le bouton n'est plus accessible.
+  La remise à zéro de l'appairage passe par `POST /homekit/reset-pairings` (token), déjà en place depuis la phase 3.
+- **Les outils de test restent** : `POST /bus/open-door`, `/info`, `/reboot` et les logs TCP sont conservés
+  (protégés par le token ; l'utilisateur est seul sur son réseau). Ils ne sont pas retirés en phase 4.
+- Restent pour la phase 4 : chiffrement NVS des clés d'appairage (à évaluer), test de 24 h, revue mémoire.
